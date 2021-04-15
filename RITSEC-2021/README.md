@@ -6,9 +6,9 @@ The following write-up includes three challenges from RIT's RITSEC CTF 2021 comp
 * Fleshwound - 200 pts
 * Baby Graph - 231 pts
 
-### Snek - 100 pts
+## Snek - 100 pts
 #### Framing the Challenge
-Kicking off the `REV/BIN` category is a challenge called "snek".  All we are given is a `snek` file and the hint "no step on snek" from the author, `~knif3`.  For those unfamiliar, the hint refers to a popular meme with a play on the [Gadsden Flag](https://knowyourmeme.com/memes/gadsden-flag-dont-tread-on-me). 
+Kicking off the `REV/BIN` category is a challenge called "snek".  All we are given is a `snek` file and the hint `no step on snek` from the author, `~knif3`.  For those unfamiliar, the hint refers to a popular meme with a play on the [Gadsden Flag](https://knowyourmeme.com/memes/gadsden-flag-dont-tread-on-me). 
 
 ![no-step-on-snek](https://i.kym-cdn.com/photos/images/original/001/116/586/96f.jpg).  
 
@@ -199,87 +199,87 @@ for k in key:
 
 The result was the string: `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_RS{all_hi$$_and_n0_bit3}`, which clearly contains the RITSEC flag prefix at the end!  Now it makes sense why the program only printed out negative feedback, because the flag was present in ASCII form the entire time. 
 
-### Fleshwound
+## Fleshwound
 #### Framing the Challenge
-The next challenge in the `REV/BIN` category, Fleshwound, provided a single file `fleshwound.json` and the hint `Tis but a....`.  Monty Python fans will immediately recognize the truncated quote, though again the hint is not immediately apparent.  Investigation of the `fleshwound.json` file shows a lot of...garbage?  It is not clear how the JSON file should be interpreted.  A number of the fields are either obfuscated or otherwise poorly named and the plaintext does not clearly indicate a path forward.  One interesting observation is that the file defines a number of "opcodes", with commands like `event_whenflagclicked`, `sensing_askandwait`, and `operator_equals`.  A quick search for these method names leads to [MIT's Scratch platform](https://scratch.mit.edu/) - an online application meant to introduce children to fundamental programming cconcepts.  This makes logical sense when considered in context with the challenge hint:
+The next challenge in the `REV/BIN` category, Fleshwound, provided a single file `fleshwound.json` and the hint `Tis but a....`.  Monty Python fans will immediately recognize the truncated quote, though again the hint is not immediately apparent.  Investigation of the `fleshwound.json` file shows a lot of...garbage?  It is not clear how the JSON file should be interpreted.  A number of the fields are either obfuscated or otherwise poorly named and the plain text does not clearly indicate a path forward.  One interesting observation is that the file defines a number of "opcodes", with commands like `event_whenflagclicked`, `sensing_askandwait`, and `operator_equals`.  A quick search for these method names leads to [MIT's Scratch platform](https://scratch.mit.edu/) - an online application meant to introduce children to fundamental programming cconcepts.  This makes logical sense when considered in context with the challenge hint:
 
 ![tis_but_a_scratch](https://64.media.tumblr.com/tumblr_lwrv52wVCC1qmfycwo1_500.png)
 
-The online platform accepts upload files, so long as they have a `.sb3` file extension, and modifying the file to `fleshwound.json.sb3` allows for succesful import.
+The online platform accepts upload files, so long as they have a `.sb3` file extension, and modifying the file to `fleshwound.json.sb3` allows for successful import.
 
 #### Reverse Engineering(?)
 
-![scratch_1]()
+![scratch_1](https://raw.githubusercontent.com/comed-ian/CTF-Writeups/main/RITSEC-2021/_images/scratch_1.png)
 
 The next step, now that the Scratch file is uploaded, is half reverse engineering and half understanding how Scratch works. Simple testing showed that the green flag icon runs a prompt asking `What do you seek?`.  This seems to be on the right path, but a seemingly incorrect input does not yield positive or negative feedback.  Searching the JSON file for this string shows that it resides within a `sensing_askandwait` opcode.  It also shows that this "method" calls method `iybEVB.t5+ShRV.(sy,r` as the next "block" which is a `control_if` opcode.  This makes logical sense, as the program should compare the user input with some key.  The operation uses condition `ds7|:EA%,[mCT/qcZQGw` in its comparison, which happens to be the next field.  This `operator_equals` opcode uses defined operands, one of which is `gib flag`!  
 
 ~~~json
-"       Soe6]HpjC+UgMd:@;}m`": {
-          "opcode": "sensing_askandwait",
-          "next": "iybEVB.t5+ShRV.(sy,r",
-          "parent": "cGx8SgL{LHM2sdl?BtcU",
-          "inputs": {
-            "QUESTION": [
-              1,
-              [
-                10,
-                "What do you seek?"
-              ]
-            ]
-          },
-          "fields": {},
-          "shadow": false,
-          "topLevel": false
-        },
-        "iybEVB.t5+ShRV.(sy,r": {
-          "opcode": "control_if",
-          "next": null,
-          "parent": "Soe6]HpjC+UgMd:@;}m`",
-          "inputs": {
-            "CONDITION": [
-              2,
-              "ds7|:EA%,[mCT/qcZQGw"
-            ],
-            "SUBSTACK": [
-              2,
-              "pkoXojuxYKokNfFAPT;X"
-            ]
-          },
-          "fields": {},
-          "shadow": false,
-          "topLevel": false
-        },
-        "ds7|:EA%,[mCT/qcZQGw": {
-          "opcode": "operator_equals",
-          "next": null,
-          "parent": "iybEVB.t5+ShRV.(sy,r",
-          "inputs": {
-            "OPERAND1": [
-              3,
-              "ZrM|k+=dpJeT[{W_Yx.E",
-              [
-                10,
-                ""
-              ]
-            ],
-            "OPERAND2": [
-              1,
-              [
-                10,
-                "gib flag"
-              ]
-            ]
-          },
-          "fields": {},
-          "shadow": false,
-          "topLevel": false
-        },
+"Soe6]HpjC+UgMd:@;}m`": {
+  "opcode": "sensing_askandwait",
+  "next": "iybEVB.t5+ShRV.(sy,r",
+  "parent": "cGx8SgL{LHM2sdl?BtcU",
+  "inputs": {
+    "QUESTION": [
+      1,
+      [
+        10,
+        "What do you seek?"
+      ]
+    ]
+  },
+  "fields": {},
+  "shadow": false,
+  "topLevel": false
+},
+"iybEVB.t5+ShRV.(sy,r": {
+  "opcode": "control_if",
+  "next": null,
+  "parent": "Soe6]HpjC+UgMd:@;}m`",
+  "inputs": {
+    "CONDITION": [
+      2,
+      "ds7|:EA%,[mCT/qcZQGw"
+    ],
+    "SUBSTACK": [
+      2,
+      "pkoXojuxYKokNfFAPT;X"
+    ]
+  },
+  "fields": {},
+  "shadow": false,
+  "topLevel": false
+},
+"ds7|:EA%,[mCT/qcZQGw": {
+  "opcode": "operator_equals",
+  "next": null,
+  "parent": "iybEVB.t5+ShRV.(sy,r",
+  "inputs": {
+    "OPERAND1": [
+      3,
+      "ZrM|k+=dpJeT[{W_Yx.E",
+      [
+        10,
+        ""
+      ]
+    ],
+    "OPERAND2": [
+      1,
+      [
+        10,
+        "gib flag"
+      ]
+    ]
+  },
+  "fields": {},
+  "shadow": false,
+  "topLevel": false
+},
 ~~~
 
 The program was re-run using `gib flag` as the input, and the drum icon in the upper right (which is a "Sprite", one of Scratch's animated characters / objects" prints out `RS...{...Hmm is this is a distraction?!...Dancing...`.  Clearly this is on the right path, however some additional investigation must be performed.  Doing some brief recon, the Scratch platform appears to generate code using color-coded blocks and internal variables.  For example, it appears that an `__init__` function is declared which runs `fleshwound.json.py` from the uploaded JSON, which presumably runs the command prompt, but there is no instance where `__init__` is called.  After much poking around, a different Backdrop 1 "Stage" was discovered.  This is essentially another workspace for organizing the Scratch program and defines the behavior for when the green flag is clicked!
 
-![backdrop_1]()
+![backdrop_1](https://raw.githubusercontent.com/comed-ian/CTF-Writeups/main/RITSEC-2021/_images/backdrop_1.png)
 
-Here it shows that the initial `RS{` are output using the Sprite's `think` command, however the `distract_me` function is called which prints the remaining text.  Clearly this call should be modified to something that prints out the remainder of the flag.  Again, much poking around ensued, until discovery of yet another Backdrop represented by the drum Sprite.  This backdrop contains commands a `finish` function which end with a `}`, which logically represents the rest of the flag.  Navigating back to Backdrop 1 and changing the `broadcast` block from `distract_me and wait` to `finish and wait`, the flag `RS{eeee_whats_th@t_scratch} is printed out sequentially!
+Here it shows that the initial `RS{` are output using the Sprite's `think` command, however the `distract_me` function is called which prints the remaining text.  Clearly this call should be modified to something that prints out the remainder of the flag.  Again, much poking around ensued, until discovery of yet another Backdrop represented by the drum Sprite.  This backdrop contains commands a `finish` function which end with a `}`, which logically represents the rest of the flag.  Navigating back to Backdrop 1 and changing the `broadcast` block from `distract_me and wait` to `finish and wait`, the flag `RS{eeee_whats_th@t_scratch?}` is printed out sequentially!
 
-![scratch_2]()
+![scratch_2](https://raw.githubusercontent.com/comed-ian/CTF-Writeups/main/RITSEC-2021/_images/scratch_2.png)
