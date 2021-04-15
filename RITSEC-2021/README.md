@@ -199,7 +199,7 @@ for k in key:
 
 The result was the string: `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_RS{all_hi$$_and_n0_bit3}`, which clearly contains the RITSEC flag prefix at the end!  Now it makes sense why the program only printed out negative feedback, because the flag was present in ASCII form the entire time. 
 
-## Fleshwound
+## Fleshwound - 200 pts
 #### Framing the Challenge
 The next challenge in the `REV/BIN` category, Fleshwound, provided a single file `fleshwound.json` and the hint `Tis but a....`.  Monty Python fans will immediately recognize the truncated quote, though again the hint is not immediately apparent.  Investigation of the `fleshwound.json` file shows a lot of...garbage?  It is not clear how the JSON file should be interpreted.  A number of the fields are either obfuscated or otherwise poorly named and the plain text does not clearly indicate a path forward.  One interesting observation is that the file defines a number of "opcodes", with commands like `event_whenflagclicked`, `sensing_askandwait`, and `operator_equals`.  A quick search for these method names leads to [MIT's Scratch platform](https://scratch.mit.edu/) - an online application meant to introduce children to fundamental programming cconcepts.  This makes logical sense when considered in context with the challenge hint:
 
@@ -283,3 +283,54 @@ The program was re-run using `gib flag` as the input, and the drum icon in the u
 Here it shows that the initial `RS{` are output using the Sprite's `think` command, however the `distract_me` function is called which prints the remaining text.  Clearly this call should be modified to something that prints out the remainder of the flag.  Again, much poking around ensued, until discovery of yet another Backdrop represented by the drum Sprite.  This backdrop contains commands a `finish` function which end with a `}`, which logically represents the rest of the flag.  Navigating back to Backdrop 1 and changing the `broadcast` block from `distract_me and wait` to `finish and wait`, the flag `RS{eeee_whats_th@t_scratch?}` is printed out sequentially!
 
 ![scratch_2](https://raw.githubusercontent.com/comed-ian/CTF-Writeups/main/RITSEC-2021/_images/scratch_2.png)
+
+## Baby Graph - 231 pts
+Finally, a more traditional binary exploitation challenge!  The Baby Graph challenge exposes a challenge domain and port, a libc file, a binary file, *and* its source code.  Running `file` on the binary shows that it is an ELF 64-bit executable.  Good news.  Diving into the source code, a glaring function is `void vuln()`, which provides call to `system`.  Furthermore, RIP control is not required to call `vuln()`, as it is called in `main()` prior to exit.  
+
+~~~c
+void vuln() {
+    char buf[100];
+
+    printf("Here is your prize: %p\n", system);
+    fgets(buf, 400, stdin);
+}
+~~~
+
+The rest of main establishes a graph with a randomized number of vertices and edges and prompts the user to determine if the graph is Eulerian (Y or N).  The user input is compared against a global `bruh` variable which is set in `generateGraph()` based on the whether any of the vertices has an even degree.
+
+~~~c
+int main() {
+    setvbuf(stdin, NULL, _IONBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
+    srand(time(NULL));
+    char ans;
+
+    for (int i = 0; i < NQUIZ; i++) {
+        generateGraph();
+        printGraph();
+
+        puts("Now tell me if this baby is Eulerian? (Y/N)");
+        scanf("%c%*c", &ans);
+
+        if (ans != 'Y' && ans != 'N') {
+            puts("Hey! Don't do that here");
+            exit(-1);
+        } else {
+            bool b_ans = ans == 'Y';
+            if (bruh != b_ans) {
+                puts("Sorry you are wrong mate.");
+                exit(-1);
+            }
+        }
+    }
+
+    vuln();
+    return 0;
+}
+~~~
+
+It does not seem intially feasible to compute whether the tree is Eulerian simply by the number of edges and vertices, which is printed out to the console with each prompt.  However, this loop only executes `NQUIZ = 5` times.  Thus, brute forcing the answer will work one of every `2^5 = 32` times.  Furthermore, some fuzzing was performed to understand whether there is an implicit bias toward Y or N.  Results of thousands of iterations show that the graph is not Eulerian more than 3x more often.  This can be rationalized by understanding that `bruh` is set to false if *any* of the vertices has an even degree.  Since each graph is generated randomly with 2-10 vertices, there is logically a much better chance that the `bruh` is false.  
+
+After a few lucky guesses (`N-N-N-Y-N` seemed to be a lucky winning combination), `vuln()` was called.  Here the binary prompts for user input and retrieves it with `fgets()`.  While `fgets()` is a safer function than its vulnerable cousin `gets()`, the program has a clear overflow vulnerability by reading in 400 bytes into a 100 byte buffer.  Disassembly shows that the buffer is actually set to `0x70 = 112` bytes, but still clearly vulnerable to overflow.  
