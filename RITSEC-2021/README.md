@@ -10,14 +10,14 @@ The following write-up includes three challenges from RIT's RITSEC CTF 2021 comp
 #### Framing the Challenge
 Kicking off the `REV/BIN` category is a challenge called "snek".  All we are given is a `snek` file and the hint "no step on snek" from the author, `~knif3`.  For those unfamiliar, the hint refers to a popular meme with a play on the [Gadsden Flag](https://knowyourmeme.com/memes/gadsden-flag-dont-tread-on-me). 
 
-[!no-step-on-snek](https://knowyourmeme.com/photos/1116586-gadsden-flag-dont-tread-on-me).  
+![no-step-on-snek](https://i.kym-cdn.com/photos/images/original/001/116/586/96f.jpg).  
 
 This might not be much of a hint for some players, so the logical next step is to try and identify the file.  Running `file` simply returns `data` which proves that this is not a standard ELF or PE executable.  `strings` reveals some useful information, including `__init__` and `__name__`, which are indicative of a Python file.  Suddenly the hint makes sense!  However this is not a Python `.py` source code file, but rather compiled Python bytecode.  
 
 
 The next hurdle comes when trying to execute the program.  Depending on the version of Python a contestant has installed, the bytecode may or may not execute.  By luck, my attempt at running with Python3 version 3.9+ failed, but Evan's v3.7 executed it without an error.  This led us to create a Docker container running Python 3.7 instead of trying to revert my Python version.  We set about determining an appropriate disassembler to add to the Dockerfile's installation dependencies and found a suitable candidate, [xdis](https://pypi.org/project/xdis/).  This utility also requires Python's `click`.  These dependencies are installed in the Python 3.7 Docker container using the Dockerfile shown below: 
 
-~~~Docker
+~~~Dockerfile
 FROM python:3.7
 
 run pip install xdis	
@@ -26,7 +26,7 @@ run pip install click
 user 1000:1000
 ~~~
 
-The bytecode can now be executed within the container, revealing the prompt `Enter my name: `. Entering a random guess indicates an insuccessful answer and terminates execution.  
+The bytecode can now be executed within the container, revealing the prompt `Enter my name: `. Entering a random guess indicates an unsuccessful answer and terminates execution.  
 
 ~~~shell
 ❯ python3 snek
@@ -34,13 +34,13 @@ Enter my name: comed-ian
 WRONG
 ~~~
 
-Clearly some reverse engineering is required to identify the correct input and tretrieve the flag.
+Clearly some reverse engineering is required to identify the correct input and retrieve the flag.
 
 #### Reverse Engineering the Bytecode
 As mentioned previously, the `xdis` utility can assist by disassembling the compiled Python bytecode.  `xdis` can be run using a Python script, but also has a convenient CLI extension: `pydisasm`.  Beforehand, the file must be changed to use a `.pyc` extension so the disassembler can process it.  Using `pydisasm snek.pyc` yields a significant amount of metadata which indicates the source is Python 3.7 bytecode, as we established earlier.  Furthermore, the utility disassembles each method.  There are multiple methods recognized, however the key to this challenge exists in the `<module>` and `__init__` methods, which are described below 
 
 ##### <module>
-The `<module>` method takes care of user interaction and initializing the environment.  It first creates a `d` object of type `'d'`, which is an object with two methods: `__init__` and `__eq__`.  For the sake of brevity, `__eq__` overloads the `==` operator and checks the equivalece of two parameters. The `__init__` method will be discussed in the next section.  `<module>` proceeds to print the problem prompt and accept user input, storing it in `x`.  Lines 28-34 define an object `a` of type `d`, instantiated with `x` as its input (e.g. `a = d(x)`).  Without any further reverse engineering, it is logical to assume that the `d` object performs an encryption / decryption algorithm, as the following command compares equivalence between `a` and `x`.  This is odd, however, as the resulting control flow either prints out `IS_THIS_THE_FLAG??` followed by `NOPE`, or `WRONG`.  It would therefore seem as if feeding the decrypted key into the program does not, in fact, yield the flag.  We next took a look into the `'d'` method, leading to an investigation of the `__init__` method.  
+The `<module>` method takes care of user interaction and initializing the environment.  It first creates a `d` object of type `'d'`, which is an object with two methods: `__init__` and `__eq__`.  For the sake of brevity, `__eq__` overloads the `==` operator and checks the equivalence of two parameters. The `__init__` method will be discussed in the next section.  `<module>` proceeds to print the problem prompt and accept user input, storing it in `x`.  Lines 28-34 define an object `a` of type `d`, instantiated with `x` as its input (e.g. `a = d(x)`).  Without any further reverse engineering, it is logical to assume that the `d` object performs an encryption / decryption algorithm, as the following command compares equivalence between `a` and `x`.  This is odd, however, as the resulting control flow either prints out `IS_THIS_THE_FLAG??` followed by `NOPE`, or `WRONG`.  It would therefore seem as if feeding the decrypted key into the program does not, in fact, yield the flag.  We next took a look into the `'d'` method, leading to an investigation of the `__init__` method.  
 
 ~~~asm 
   9:           4 LOAD_BUILD_CLASS
@@ -185,7 +185,7 @@ As mentioned above, an object created of type `'d'` is instantiated using the `_
              172 RETURN_VALUE
 ~~~  
 
-#### Decrypting the Key
+#### Printing the Key
 A simple Python file was created to output the presumed ASCII values as characters.  
 
 ~~~python
