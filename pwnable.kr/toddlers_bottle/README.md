@@ -113,6 +113,52 @@ def main(arguments):
     p.interactive()
 ~~~
 
+### flag
+This challenge is a simple reversing challenge that presents a standalone binary to examine. Downloading and running the `flag` binary prints out the following prompt: `I will malloc() and strcpy the flag there. take it.`  Seems simple enough, but attempting to disassemble the binary with `objdump` yields the following: 
+
+~~~bash
+$ objdump -d flag
+
+flag:     file format elf64-x86-64
+~~~
+
+That's interesting.  Opening in a diassembler like Binary Ninja also shows a number of function calls, but no `main` entry point.  While the file is correctly identified as an ELF executable, something is still wrong.  Taking a look at the file's hex output shows the following: 
+![flag_hex](https://raw.githubusercontent.com/comed-ian/CTF-Writeups/main/pwnable.kr/toddlers_bottle/_images/flag.png)
+
+Note the `UPX!` bytes, which indicate that this file is compressed using the [upx packer](https://upx.github.io/).  Installing and running upx on the file generates a much more familiar output: 
+
+~~~bash
+$ upx -d flag -o flag1
+                       Ultimate Packer for eXecutables
+                          Copyright (C) 1996 - 2018
+UPX 3.95        Markus Oberhumer, Laszlo Molnar & John Reiser   Aug 26th 2018
+
+        File size         Ratio      Format      Name
+   --------------------   ------   -----------   -----------
+    883745 <-    335288   37.94%   linux/amd64   flag1
+
+Unpacked 1 file.
+$ objdump -d -M intel flag1 | grep "<main>:" -A 15
+0000000000401164 <main>:
+  401164:       55                      push   rbp
+  401165:       48 89 e5                mov    rbp,rsp
+  401168:       48 83 ec 10             sub    rsp,0x10
+  40116c:       bf 58 66 49 00          mov    edi,0x496658
+  401171:       e8 0a 0f 00 00          call   402080 <_IO_puts>
+  401176:       bf 64 00 00 00          mov    edi,0x64
+  40117b:       e8 50 88 00 00          call   4099d0 <__libc_malloc>
+  401180:       48 89 45 f8             mov    QWORD PTR [rbp-0x8],rax
+  401184:       48 8b 15 e5 0e 2c 00    mov    rdx,QWORD PTR [rip+0x2c0ee5]        # 6c2070 <flag>
+  40118b:       48 8b 45 f8             mov    rax,QWORD PTR [rbp-0x8]
+  40118f:       48 89 d6                mov    rsi,rdx
+  401192:       48 89 c7                mov    rdi,rax
+  401195:       e8 86 f1 ff ff          call   400320 <.plt+0x10>
+  40119a:       b8 00 00 00 00          mov    eax,0x0
+  40119f:       c9                      leave
+~~~
+
+Here we see that the flag is loaded into rdx and is stored at address 0x6c2070.  Opening the binary in Binary Ninja shows that the pointer at this location points to the string at address 0x496628, which can be viewed to find the flag stored in plaintext.  
+
 ### passcode
 This binary appears to have some `scanf` vulnerabilities, hinted at by the comments in the source code.  Running `clang passcode.c -o passcode` illuminates this hint with `clang`'s warning flags: 
 
