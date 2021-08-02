@@ -1,6 +1,6 @@
 ## Toddler's Bottle Challenges
 
-### [fd]
+### fd
 
 After ssh-ing into the box, we can run `ls` to see that there are three files present, a 32-bit Linux ELF executable, the source code for the executable, and a flag file.  Attempting to `cat` the flag yields a privilege error because we are a guest user.  Consequently, we need to use the executable to read the flag.  Examining the source code shows a call to `system("/bin/cat flag");` if the input buffer, read from a calculated file descriptor, is equivalent to `"LETMEWIN\n"`.  
 
@@ -272,3 +272,54 @@ def exploit():
 if __name__ == "__main__":
         exploit()
 ~~~
+
+### leg
+This is our first ARM challenge, and primarly tests a couple unique features of ARM assembly.  We are provided with both the source code file and the associated disassembly, which allows us to solve this challenge with just static analysis.  The program is simple: it calls three functions, adds their return values, and prints the flag if the sum is equivalent to the user provided input.  While tempting to simply consider the inline assembly in the source code, the key is to investigate the ARM disassembly to understand the return values.  
+
+`Key1()` is a simple function and displays some of the uniqueness of ARM.  Register 11 (`r11`) is roughly analogous to `ebp` in x86 as it stores the return base pointer address when `bl`, branch and link, is called.  This allows functions to call other functions and return to their function stack prior to branching.  The other key difference here is the use of the `pc` register (sometimes referred to as `r15`).  This register operates like the program counter (or `eip`) in x86, *however it always points two full instructions ahead of the current instruction*.  We will see why in the analysis of the next function.  This means the instruction `mov	r3, pc` actually moves `current instruction value + 2 * 4`, where four is the number of bytes of each ARM instruction.  This means the actual value stored into `r3` and then returned to the calling function via `r0` (similar to how `eax` returns a function value) is `0x00008ce4`.
+
+~~~gdb
+   0x00008cd4 <+0>:	push	{r11}		; (str r11, [sp, #-4]!)
+   0x00008cd8 <+4>:	add	r11, sp, #0
+   0x00008cdc <+8>:	mov	r3, pc
+   0x00008ce0 <+12>:	mov	r0, r3
+   0x00008ce4 <+16>:	sub	sp, r11, #0
+   0x00008ce8 <+20>:	pop	{r11}		; (ldr r11, [sp], #4)
+   0x00008cec <+24>:	bx	lr
+~~~
+
+`Key2()` adds additional ARM functionality using the `bx` instruction. `bx` is a branching instruction like `b`, however it also performs a check to see if the processor should switch to ARM's "thumb" mode.  Thumb mode is a more efficient processing mode in which instructions are shorter (two bytes instead of four).  The way a programmer enters thumb mode is to set the least significant bit of an instruction address (which will not affect the instruction itself, as it is either 16- or 32-bit aligned by ARM standards).  Thus, two back-to-back instructions such as `add	r6, pc, #1` and `bx	r6` will effectively jump to the next expected instruction (the instruction after `bx	r6`) in thumb mode.  We see that in this function, and thumb mode begins at address `0x00008d04`.  In this case, when we perform the operation `mov	r3, pc`, we do not add `2 * 4` as we did in the previous function, as thumb mode instructions are only 2 bytes long.  Therefore, we add `2 * 2` to the current instruction's address, or `0x00008d08`.  The next instruction then adds four to this value, making the return value `0x00008d0c`.
+~~~gdb 
+   0x00008cf0 <+0>:	push	{r11}		; (str r11, [sp, #-4]!)
+   0x00008cf4 <+4>:	add	r11, sp, #0
+   0x00008cf8 <+8>:	push	{r6}		; (str r6, [sp, #-4]!)
+   0x00008cfc <+12>:	add	r6, pc, #1
+   0x00008d00 <+16>:	bx	r6
+   0x00008d04 <+20>:	mov	r3, pc
+   0x00008d06 <+22>:	adds	r3, #4
+   0x00008d08 <+24>:	push	{r3}
+   0x00008d0a <+26>:	pop	{pc}
+   0x00008d0c <+28>:	pop	{r6}		; (ldr r6, [sp], #4)
+   0x00008d10 <+32>:	mov	r0, r3
+   0x00008d14 <+36>:	sub	sp, r11, #0
+   0x00008d18 <+40>:	pop	{r11}		; (ldr r11, [sp], #4)
+   0x00008d1c <+44>:	bx	lr
+~~~~
+
+`Key3()` adds a final new feature which is the `lr` register.  The `lr` register is analogous to the return `eip` stored on the stack during function calls, and allows functions to call other functions and then resume execution on the subsequent instruction.  Here we take the value of `lr` and store it into `r3` which is then returned to the `main` function.  Since the instruction immediately follwing `Key3()` is `0x00008d80` in `main()`, this is the return value for the function.  
+
+~~~gdb 
+   0x00008d20 <+0>:	push	{r11}		; (str r11, [sp, #-4]!)
+   0x00008d24 <+4>:	add	r11, sp, #0
+   0x00008d28 <+8>:	mov	r3, lr
+   0x00008d2c <+12>:	mov	r0, r3
+   0x00008d30 <+16>:	sub	sp, r11, #0
+   0x00008d34 <+20>:	pop	{r11}		; (ldr r11, [sp], #4)
+   0x00008d38 <+24>:	bx	lr
+~~~
+Validating the equivalence comparison means inputting the value equal to the three return sums. Since `scanf("%d", &key);` will convert the value to an integer, we need to input the string value of the sums, or `0x00008ce4 + 0x00008d0c + 0x00008d80 = 108400`.  
+
+### mistake
+This program is relatively simple to understand once the bug is found.  It is clear that there is a mistake in the program based on the program name and prompt.  Identifying the bug can be done by either reviewing the source code, or by executing the binary and observing its behavior.  Running the program results in the process hanging, as if it is waiting for user input.  This is unexpected, as the program seemingly begins by reading the flag file and then prompting the user for input.  Because the prompt does not appear until after some user input is given, our preliminary understanding of the program is incorrect.  
+
+A quick search for the hint `operator priority` or compiling the source code with a rigorous compiler like `clang` gives hints as to what the issue is.  ![This guide](https://www.tutorialspoint.com/cprogramming/c_operators_precedence.htm) shows that the relational operators `< <= > >=` are given higher precedence (operated upon prior to) the assignment operator `=`.  This means the first line in `main()`, `if(fd=open("./password",O_RDONLY,0400) < 0)`, will first compare the return value (`fd`) returned by `open()` to 0.  Since the file is opened and returned a `fd`, the comparison will return a False (`0`) value.  This means that the `fd=` assignment will store `0` as the file descriptor later used to load `pw_buf`.  The subsequent command `read(fd,pw_buf,PW_LEN)` will effectively read data from file descriptor `0` (stdin) as the password.  This means we control both the password and the user input which is xor-d and compared to the password.  We can choose easy values for the two inputs, such as `BBBBBBBBBB` and `CCCCCCCCCC`, since B (0x41) xor 0x1 is C (0x42).  This passes the check and returns the flag.
