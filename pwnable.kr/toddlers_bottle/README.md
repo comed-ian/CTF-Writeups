@@ -543,6 +543,97 @@ def exploit():
   print(p.recvline())
 ```
 
+### memcpy
+
+This challenges provides source code for `memcpy.c`, which implements a byte-by-byte "slow" memcpy and a asm-based "fast" memcpy. It asks us to choose different copy sizes, and if the program runs to completion it prints the flag. The issue is that the server appears to crash before the end of the script. 
+
+Compiling the code ourselves with `gcc memcpy.c -o memcpy -m32 -lm`, we can see the error message and trace the crash. For example, the first crash when using the minimum values for each chunk (as shown below) occurs in `fast_memcpy()`
+
+```bash
+input: 
+8
+16
+32
+64
+128
+256
+512
+1024
+2048
+4096
+```
+
+As shown below, the crash occurs when trying to assign the copy to `[edx]` which is a heap address `0x804d0a8`. 
+
+```gdb
+(gdb) disass
+   0x080487b3 <+27>:	mov    eax,DWORD PTR [ebp+0xc]
+   0x080487b6 <+30>:	mov    edx,DWORD PTR [ebp+0x8]
+   0x080487b9 <+33>:	movdqa xmm0,XMMWORD PTR [eax]
+   0x080487bd <+37>:	movdqa xmm1,XMMWORD PTR [eax+0x10]
+   0x080487c2 <+42>:	movdqa xmm2,XMMWORD PTR [eax+0x20]
+   0x080487c7 <+47>:	movdqa xmm3,XMMWORD PTR [eax+0x30]
+=> 0x080487cc <+52>:	movntps XMMWORD PTR [edx],xmm0
+
+(gdb) i r
+eax            0xf7fca000	-134438912
+ecx            0xf7fd3f80	-134398080
+edx            0x804d0a8	134533288
+ebx            0x0	0
+esp            0xffffdb68	0xffffdb68
+ebp            0xffffdb78	0xffffdb78
+esi            0xf7f6c000	-134823936
+edi            0xf7f6c000	-134823936
+```
+
+Digging into the [movntps assembly instruction](https://www.felixcloutier.com/x86/movntps), it states: 
+
+> The memory operand must be aligned on a 16-byte (128-bit version), 32-byte (VEX.256 encoded version) or 64-byte (EVEX.512 encoded version) boundary otherwise a general-protection exception (#GP) will be generated
+
+As we can see, the destination `edx` register is not 16-byte aligned, but rather 8-byte aligned. What is interesting is that the crash occurs in the **128** allocation, **but this is due to the prior (64 byte) allocation**. These destinations are on the heap, and all of these allocations are small enough to be cached. That means the allocations are sequential and therefore the allocated address is influenced by the prior size. 
+
+Heap chunks assigned by `malloc(size_t size)` allocate a chunk that is **size + 8** bytes (for 32-bit programs), where the additional 8 bytes maintain chunk metadata. As shown below, the 64-byte (0x40) allocation actually creates a 0x48 size chunk (where the chunk size is actually 0x49 due to the logical OR with heap flags). This means the next allocation header begins at 0x804d0a0, and the chunk data therefore starts at 0x804d0a0 + 8 = 0x804d0a8. This is clearly not 0x10 byte aligned, and therefore the 128-byte memcpy fails. 
+
+
+
+```gdb
+0x804d050:	                        0x00000000	0x00000000	0x00000000	0x00000049 < total chunk size (incl header) | FLAGS
+0x804d060: 64 alloc begins here >   0x00000000	0x00000000	0x00000000	0x00000000
+0x804d070:	                        0x00000000	0x00000000	0x00000000	0x00000000
+0x804d080:	                        0x00000000	0x00000000	0x00000000	0x00000000
+0x804d090:	                        0x00000000	0x00000000	0x00000000	0x00000000
+0x804d0a0:	                        0x00000000	0x00000089	0x00000000  < 128 alloc begins here
+```
+
+However, if we increase the size of the prior allocation to, say, 72 (0x48), the next header begins at 0x804d0a8 and therefore the chunk data starts at 0x804d0a8 + 8 = 0x804d0b0, which **is** aligned:
+
+```gdb
+0x804d050:	                        0x00000000	0x00000000	0x00000000	0x00000051
+0x804d060: 72 alloc begins here >   0x00000000	0x00000000	0x00000000	0x00000000
+0x804d070:                        	0x00000000	0x00000000	0x00000000	0x00000000
+0x804d080:                        	0x00000000	0x00000000	0x00000000	0x00000000
+0x804d090:                        	0x00000000	0x00000000	0x00000000	0x00000000
+0x804d0a0:                        	0x00000000	0x00000000	0x00000000	0x00000089
+0x804d0b0: 128 alloc begins here >  0x00000000	0x00000000	0x00000000	0x00000000
+```
+
+Note that this `fast_memcpy` error does not apply for sizes smaller than 0x40, because it simply calls `slow_memcpy` for anything smaller than that size. Therefore, we simply need to increase every chunk between 64 and 4096 (no adjustment is needed for the final chunk, since there is nothing to follow it) by 8 bytes to force all subsequent chunks to be 0x10-byte aligned. 
+
+```bash
+8     -> slow_memcpy
+16    -> slow_memcpy
+32    -> slow_memcpy
+64    -> 0x48 allocation -> change to 72 -> 0x50 allocation
+128   -> 0x88 allocation -> change to 132 -> 0x90 allocation
+256   -> 0x108 allocation -> change to 264 -> 0x110 allocation
+512   -> 0x208 allocation -> change to 520 -> 0x210 allocation
+1024  -> 0x408 allocation -> change to 1032 -> 0x410 allocation
+2048  -> 0x808 allocation -> change to 2056 -> 0x810 allocation 
+4096  -> 0x1008 allocation -> ok (last allocation) 
+```
+
+This input succeeds and the program prints the flag at completion.
+
 ### uaf 
 
 *Exploit Primitive*: Use after free (UAF)
