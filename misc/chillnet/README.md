@@ -5,7 +5,7 @@
 Running the downloaded version reveals a couple key details:
 1. The connection is presumably assigned a unique UUID
 1. The process begins with a calibration period to establish a BPM
-1. The process logs a calculated BPM, in this case around 95 BPM, which is
+1. The process logs a calculated BPM, in this case around 121 BPM, which is
 "too slow"
 
 ```bash
@@ -40,10 +40,13 @@ such as `___rust_alloc` are a key indicator. `_main` quickly calls
 `malware::main::h156d824968118820`, which is where the majority of the
 functionality resides. The first anchor point is determining where looping
 occurs - presumably there is a `loop` which runs until some condition is met.
-Locating this code in the `malware::getf::h9a16fbe693568701`
-![shows a loop](_images/loop.png) that continues until the return value of the
-call to `core::str::_$LT$impl$u20$str$GT$::contains::h1cdf56e08216399c` returns
-nonzero. One of the arguments to `contain` starts with the string `cs{`, so
+Locating this code in the `malware::getf::h9a16fbe693568701` shows a loop
+that continues until the return value of the call to
+`core::str::_$LT$impl$u20$str$GT$::contains::h1cdf56e08216399c` returns
+nonzero. 
+
+
+![loop](_images/loop.png) One of the arguments to `contain` starts with the string `cs{`, so
 presumably this routine continues until the process receives a string containing
 the flag. The return value (the return from a `String` related function) is
 immediately used for `display` and `fmt` functions in `malware::main::...`, so
@@ -55,17 +58,17 @@ retrieved from a server and not located in the binary itself. Scanning the loop
 shows a call to `malware::send_beat::h19f80d2b9a93adfe`, which sounds promising
 given the BPM output from running the binary. The function calls a lot of
 formatting and string functions, but then later uses `reqwest::blocking::get`
-which is a [crate for HTTP requests](https://docs.rs/reqwest/latest/reqwest/
-index.html). This likely indicates communication with some server to pass a flag
+which is a [crate for HTTP requests](https://docs.rs/reqwest/latest/reqwest/index.html).
+This likely indicates communication with some server to pass a flag
 check. The sequence of calls:
 
 1. `reqwest::blocking::get`
 1. `core::result::Result::...::unwrap`
 1. `reqwest::blocking::response::Response`
 
-Look very similar to [an example in the `reqwest` documentation](https://
-docs.rs/reqwest/latest/reqwest/blocking/struct.Response.html#examples). This
-is very likely a HTTP GET request, checking for a valid response, and returning
+Look very similar to [an example in the `reqwest`
+documentation](https://docs.rs/reqwest/latest/reqwest/blocking/struct.Response.html#examples).
+This is very likely a HTTP GET request, checking for a valid response, and returning
 the response to `malware::getf::...`. The following function calls involve
 `String`, `display`, and `fmt` calls followed by `std::io::stdio::_print`. This
 means the process is formatting a string and logging it (likely to `stdout`).
@@ -74,8 +77,8 @@ calculations. Rather, it is sending a GET request (with content currently
 unknown) to the server and then logging its response to console. The lag between
 console logs is due to the final two function calls in the loop:
 `core::time::Duration::from_millis` and `std::thread::sleep`. This is a common
-sequence for sequence of operations [to make a rust process sleep](https://
-doc.rust-lang.org/std/thread/fn.sleep.html#examples).
+sequence for sequence of operations
+[to make a rust process sleep](https://doc.rust-lang.org/std/thread/fn.sleep.html#examples).
 
 Given this challenge appears to analyze BPM (beats per minute) and there is a
 process sleep of X milliseconds, presumably the sleep needs to be adjusted to
@@ -95,9 +98,11 @@ disassembly shows that this is 0xc8, or 200 ms.
 So, adjusting this value should change the BPM response from the server because
 it adjusts the frequency at which the GET request function is called. This
 theory is most easily tested by patching the binary. Binary Ninja can do this
-easily by ![right clicking on the scalar value --> Patch -->
-Patch current line](_images/patch.png). Entering 150 changes the relevant `mov`
+easily by right clicking on the scalar value --> Patch -->
+Patch current line. Entering 150 changes the relevant `mov`
 instruction bytes from 08198052 to c8128052.
+
+![patch](_images/patch.png)
 
 ```
 100005354  c8128052   mov     w8, #0x96
@@ -123,10 +128,11 @@ BPM around 125-130 BPM:
 
 ```
 150ms --> 135BPM
-100ms --> 160BPM
 You are just right! Keep it up! Perceived BPM: 125.78616402498548
 ...
 You are just right! Keep it up! Perceived BPM: 130.1518535106492
+
+100ms --> 160BPM
 ```
 
 ### Codesigning
@@ -179,7 +185,7 @@ Exception Codes:       0x0000000000000032, 0x000000010065165c
 As shown above, the process was automatically killed, not by `zsh`, but rather
 the OS due to the invalid code signature. Since the challenge creator created
 and signed the binary, updating the signature is not viable without the cert
-on-hand. An easy workaround is just to run the binary in lldb, which bypasses
+on-hand. An easy workaround is just to run the binary in LLDB, which bypasses
 signature checks for the spawned subprocess. Otherwise, resign the binary as
 follows. First, create a new self-signed code signing cert using
 Keychain Access -> Certificate Assistant -> Create a Certificate with the name
@@ -238,7 +244,7 @@ It should be noted that internet lag will certainly affect these
 calculations, as the server is likely maintaining a timer between the last
 received packet and the next. Round Trip Timing (RTT) between packets will
 clearly influence BPM. For this example, a BPM of 125 would expect a packet
-every ~480 ms. Internet lag is therefore around ~430 ms, which is substantial.
+every ~480 ms. Internet lag is therefore around ~320 ms, which is substantial.
 
 Continuing the tweak the sleep results in four sequential BPMs within the
 required range, and the server responds with the flag!
